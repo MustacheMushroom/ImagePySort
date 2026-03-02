@@ -1,12 +1,14 @@
 """Unit tests for main.py image-sorting logic."""
 import os
 import shutil
+import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
-from main import EXIF_DATE_TAG, MONTH_NAMES, IMAGE_EXTENSIONS, get_date_taken, sort_images
+from main import EXIF_DATE_TAG, MONTH_NAMES, IMAGE_EXTENSIONS, get_date_taken, sort_images, select_directory
 
 
 def _make_jpeg_with_exif(path: str, date_str: str) -> None:
@@ -136,6 +138,74 @@ class TestSortImages(unittest.TestCase):
         self.assertEqual(second, 0)
         dest = os.path.join(self.tmpdir, "2023", "Jul", "photo.jpg")
         self.assertTrue(os.path.isfile(dest))
+
+    def test_skips_image_with_malformed_exif_date(self):
+        """An image whose EXIF date is too short or wrongly formatted is skipped."""
+        path = os.path.join(self.tmpdir, "bad_date.jpg")
+        _make_jpeg_with_exif(path, "202")  # malformed — not 'YYYY:MM:DD HH:MM:SS'
+
+        moved = sort_images(self.tmpdir)
+
+        self.assertEqual(moved, 0)
+        self.assertTrue(os.path.isfile(path))
+
+    def test_filename_collision_renames_duplicate(self):
+        """Two images with the same filename sorted to the same folder get distinct names."""
+        dir_a = os.path.join(self.tmpdir, "a")
+        dir_b = os.path.join(self.tmpdir, "b")
+        os.makedirs(dir_a, exist_ok=True)
+        os.makedirs(dir_b, exist_ok=True)
+
+        date_str = "2024:01:02 03:04:05"
+        _make_jpeg_with_exif(os.path.join(dir_a, "photo.jpg"), date_str)
+        _make_jpeg_with_exif(os.path.join(dir_b, "photo.jpg"), date_str)
+
+        moved = sort_images(self.tmpdir)
+
+        self.assertEqual(moved, 2)
+        dest_folder = os.path.join(self.tmpdir, "2024", "Jan")
+        self.assertTrue(os.path.isfile(os.path.join(dest_folder, "photo.jpg")))
+        self.assertTrue(os.path.isfile(os.path.join(dest_folder, "photo_1.jpg")))
+
+
+class TestSelectDirectory(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        mock_tkinter = MagicMock()
+        self._tk_patcher = patch.dict(
+            sys.modules,
+            {
+                "tkinter": mock_tkinter,
+                "tkinter.filedialog": mock_tkinter.filedialog,
+                "tkinter.messagebox": mock_tkinter.messagebox,
+            },
+        )
+        self._tk_patcher.start()
+        self.mock_filedialog = mock_tkinter.filedialog
+        self.mock_messagebox = mock_tkinter.messagebox
+
+    def tearDown(self):
+        self._tk_patcher.stop()
+        shutil.rmtree(self.tmpdir)
+
+    def test_sorts_and_shows_success_message(self):
+        self.mock_filedialog.askdirectory.return_value = self.tmpdir
+        with patch("main.sort_images", return_value=3) as mock_sort:
+            select_directory()
+            mock_sort.assert_called_once_with(self.tmpdir)
+            self.mock_messagebox.showinfo.assert_called_once()
+
+    def test_does_nothing_when_no_directory_selected(self):
+        self.mock_filedialog.askdirectory.return_value = ""
+        with patch("main.sort_images") as mock_sort:
+            select_directory()
+            mock_sort.assert_not_called()
+
+    def test_shows_error_dialog_on_exception(self):
+        self.mock_filedialog.askdirectory.return_value = self.tmpdir
+        with patch("main.sort_images", side_effect=OSError("disk full")):
+            select_directory()
+            self.mock_messagebox.showerror.assert_called_once()
 
 
 if __name__ == "__main__":

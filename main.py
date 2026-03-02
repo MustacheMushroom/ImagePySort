@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import calendar
 import os
 import shutil
@@ -42,6 +44,16 @@ def sort_images(directory: str) -> int:
             if not date:
                 continue
 
+            # Validate EXIF date string format before slicing.
+            if (
+                not isinstance(date, str)
+                or len(date) < 7
+                or date[4] != ":"
+                or not date[:4].isdigit()
+                or not date[5:7].isdigit()
+            ):
+                continue
+
             year, month = date[:4], date[5:7]
             month_name = MONTH_NAMES.get(month)
             if not month_name:
@@ -53,6 +65,13 @@ def sort_images(directory: str) -> int:
             dest_path = os.path.join(dest_folder, file)
             if os.path.abspath(file_path) == os.path.abspath(dest_path):
                 continue
+
+            # Avoid overwriting an existing file with the same name.
+            base_name, ext = os.path.splitext(file)
+            counter = 1
+            while os.path.exists(dest_path):
+                dest_path = os.path.join(dest_folder, f"{base_name}_{counter}{ext}")
+                counter += 1
 
             shutil.move(file_path, dest_path)
             moved += 1
@@ -66,8 +85,14 @@ def select_directory() -> None:
 
     directory = filedialog.askdirectory()
     if directory:
-        moved = sort_images(directory)
-        messagebox.showinfo("Info", f"Done – {moved} image(s) sorted successfully!")
+        try:
+            moved = sort_images(directory)
+            messagebox.showinfo("Info", f"Done - {moved} image(s) sorted successfully!")
+        except Exception as e:
+            messagebox.showerror(
+                "Error",
+                f"An error occurred while sorting images:\n{e}",
+            )
 
 
 if __name__ == "__main__":
