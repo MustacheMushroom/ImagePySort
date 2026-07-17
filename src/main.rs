@@ -6,9 +6,9 @@ use std::{
 
 use eframe::egui;
 use image_sorter::{
-    ArchiveCompression, DuplicateGroups, FileActionSummary, archive_files, computer_scan_roots,
-    find_exact_duplicates_in_roots, permanently_delete_files, recycle_files, sort_images,
-    unkept_duplicate_paths,
+    ArchiveCompression, DuplicateGroups, FileActionSummary, ScanProgress, archive_files,
+    computer_scan_roots, find_exact_duplicates_with_progress, format_scan_report,
+    permanently_delete_files, recycle_files, sort_images, unkept_duplicate_paths,
 };
 use rfd::FileDialog;
 
@@ -24,6 +24,7 @@ enum WorkResult {
     Sorted(Result<usize, String>),
     Scanned(Result<(DuplicateGroups, Vec<PathBuf>), String>),
     Action(Result<FileActionSummary, String>),
+    Progress(ScanProgress),
 }
 #[derive(Clone, Copy)]
 enum PendingAction {
@@ -48,6 +49,8 @@ struct ImageSorterApp {
     extra_roots: Vec<PathBuf>,
     compression: usize,
     pending_action: Option<PendingAction>,
+    scan_progress: Option<ScanProgress>,
+    scan_report: String,
 }
 
 impl ImageSorterApp {
@@ -95,10 +98,15 @@ impl ImageSorterApp {
             roots.len()
         );
         self.review = None;
+        self.scan_progress = Some(ScanProgress::default());
+        self.scan_report.clear();
         std::thread::spawn(move || {
-            let result = find_exact_duplicates_in_roots(&roots)
-                .map(|groups| (groups, roots))
-                .map_err(|e| e.to_string());
+            let progress_sender = sender.clone();
+            let result = find_exact_duplicates_with_progress(&roots, move |progress| {
+                let _ = progress_sender.send(WorkResult::Progress(progress));
+            })
+            .map(|groups| (groups, roots))
+            .map_err(|e| e.to_string());
             let _ = sender.send(WorkResult::Scanned(result));
         });
     }
@@ -155,39 +163,59 @@ impl ImageSorterApp {
         });
     }
     fn collect_result(&mut self) {
-        let Some(receiver) = &self.receiver else {
-            return;
-        };
-        let Ok(result) = receiver.try_recv() else {
-            return;
-        };
-        self.receiver = None;
-        match result {
-            WorkResult::Sorted(Ok(moved)) => {
-                self.message = format!("Done — {moved} image(s) sorted.")
+        let results: Vec<_> = self
+            .receiver
+            .as_ref()
+            .map(|receiver| receiver.try_iter().collect())
+            .unwrap_or_default();
+        let mut finished = false;
+        for result in results {
+            match result {
+                WorkResult::Progress(progress) => {
+                    self.scan_progress = Some(progress);
+                }
+                WorkResult::Sorted(Ok(moved)) => {
+                    finished = true;
+                    self.message = format!("Done — {moved} image(s) sorted.")
+                }
+                WorkResult::Scanned(Ok((groups, roots))) => {
+                    finished = true;
+                    let kept = groups.values().flatten().cloned().collect();
+                    self.scan_report = format_scan_report(
+                        &roots,
+                        self.scan_progress
+                            .as_ref()
+                            .unwrap_or(&ScanProgress::default()),
+                        &groups,
+                    );
+                    self.message = format!(
+                        "Found {} exact duplicate group(s). All items start marked Keep.",
+                        groups.len()
+                    );
+                    self.review = Some(Review {
+                        groups,
+                        kept,
+                        roots,
+                    });
+                }
+                WorkResult::Action(Ok(summary)) => {
+                    finished = true;
+                    self.message = format!(
+                        "Processed {} file(s); {} failure(s). Run another scan to refresh the review.",
+                        summary.processed,
+                        summary.failures.len()
+                    );
+                }
+                WorkResult::Sorted(Err(error))
+                | WorkResult::Scanned(Err(error))
+                | WorkResult::Action(Err(error)) => {
+                    finished = true;
+                    self.message = format!("Operation failed: {error}");
+                }
             }
-            WorkResult::Scanned(Ok((groups, roots))) => {
-                let kept = groups.values().flatten().cloned().collect();
-                self.message = format!(
-                    "Found {} exact duplicate group(s). All items start marked Keep.",
-                    groups.len()
-                );
-                self.review = Some(Review {
-                    groups,
-                    kept,
-                    roots,
-                });
-            }
-            WorkResult::Action(Ok(summary)) => {
-                self.message = format!(
-                    "Processed {} file(s); {} failure(s). Run another scan to refresh the review.",
-                    summary.processed,
-                    summary.failures.len()
-                );
-            }
-            WorkResult::Sorted(Err(error))
-            | WorkResult::Scanned(Err(error))
-            | WorkResult::Action(Err(error)) => self.message = format!("Operation failed: {error}"),
+        }
+        if finished {
+            self.receiver = None;
         }
     }
     fn select_source(&mut self, root: &PathBuf, only: bool) {
@@ -204,6 +232,22 @@ impl ImageSorterApp {
             }
         }
     }
+    fn save_scan_report(&mut self) {
+        if self.scan_report.is_empty() {
+            return;
+        }
+        if let Some(path) = FileDialog::new()
+            .set_title("Save scan report")
+            .add_filter("Text file", &["txt"])
+            .set_file_name("media-scan-report.txt")
+            .save_file()
+        {
+            match std::fs::write(&path, &self.scan_report) {
+                Ok(()) => self.message = format!("Saved scan report to {}", path.display()),
+                Err(error) => self.message = format!("Could not save report: {error}"),
+            }
+        }
+    }
 }
 
 impl eframe::App for ImageSorterApp {
@@ -213,7 +257,7 @@ impl eframe::App for ImageSorterApp {
             context.request_repaint_after(std::time::Duration::from_millis(100));
         }
         egui::CentralPanel::default().show(context, |ui| {
-            ui.heading("Media Sorter & Exact Duplicate Review"); ui.label("Only known image, video, and audio formats are scanned. Duplicate matching is byte-for-byte exact.");
+            ui.heading("Media Duplicate Review"); ui.label("Exact, byte-for-byte matching for known image, video, and audio formats.");
             ui.separator(); ui.collapsing("Scan options", |ui| {
                 ui.checkbox(&mut self.include_removable, "Include removable drives"); ui.checkbox(&mut self.include_network, "Include network drives");
                 ui.horizontal(|ui| {
@@ -237,7 +281,21 @@ impl eframe::App for ImageSorterApp {
                     }
                 });
             });
-            if !self.message.is_empty() { ui.add_space(8.0); ui.label(&self.message); }
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                if self.is_working() { ui.horizontal(|ui| { ui.spinner(); ui.strong("Scan in progress"); }); }
+                if !self.message.is_empty() { ui.label(&self.message); }
+                if let Some(progress) = &self.scan_progress { ui.label(format!("Folders: {}   Files: {}   Known media: {}   Hashed: {}   Groups: {}", progress.directories_visited, progress.files_visited, progress.media_files_found, progress.files_hashed, progress.duplicate_groups)); }
+                if !self.scan_report.is_empty() {
+                    ui.horizontal(|ui| {
+                        if ui.button("Copy scan report").clicked() {
+                            ui.ctx().copy_text(self.scan_report.clone());
+                        }
+                        if ui.button("Save scan report").clicked() {
+                            self.save_scan_report();
+                        }
+                    });
+                }
+            });
             if let Some(action) = self.pending_action {
                 egui::Window::new("Confirm duplicate-file action").collapsible(false).show(context, |ui| {
                     ui.label(match action { PendingAction::Recycle => "Move every unkept duplicate to the Recycle Bin?", PendingAction::Delete => "Permanently delete every unkept duplicate? This cannot be undone.", PendingAction::Archive => "Create a ZIP backup of every unkept duplicate? Originals will remain in place." });
