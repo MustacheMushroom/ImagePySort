@@ -8,7 +8,17 @@ from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
-from main import EXIF_DATE_TAG, MONTH_NAMES, IMAGE_EXTENSIONS, get_date_taken, sort_images, select_directory
+from main import (
+    EXIF_DATE_TAG,
+    MONTH_NAMES,
+    IMAGE_EXTENSIONS,
+    file_hash,
+    find_exact_duplicates,
+    get_date_taken,
+    iter_image_paths,
+    select_directory,
+    sort_images,
+)
 
 
 def _make_jpeg_with_exif(path: str, date_str: str) -> None:
@@ -166,6 +176,59 @@ class TestSortImages(unittest.TestCase):
         dest_folder = os.path.join(self.tmpdir, "2024", "Jan")
         self.assertTrue(os.path.isfile(os.path.join(dest_folder, "photo.jpg")))
         self.assertTrue(os.path.isfile(os.path.join(dest_folder, "photo_1.jpg")))
+
+
+class TestDuplicateScanning(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def test_iter_image_paths_finds_images_recursively(self):
+        nested = os.path.join(self.tmpdir, "nested")
+        os.makedirs(nested)
+        _make_jpeg_no_exif(os.path.join(self.tmpdir, "first.jpg"))
+        _make_jpeg_no_exif(os.path.join(nested, "second.JPG"))
+        with open(os.path.join(nested, "notes.txt"), "w") as file:
+            file.write("not an image")
+
+        paths = list(iter_image_paths(self.tmpdir))
+
+        self.assertEqual(len(paths), 2)
+        self.assertTrue(all(path.lower().endswith(".jpg") for path in paths))
+
+    def test_iter_image_paths_rejects_missing_directory(self):
+        with self.assertRaises(ValueError):
+            list(iter_image_paths(os.path.join(self.tmpdir, "missing")))
+
+    def test_file_hash_is_based_on_file_contents(self):
+        first = os.path.join(self.tmpdir, "first.jpg")
+        second = os.path.join(self.tmpdir, "second.jpg")
+        _make_jpeg_no_exif(first)
+        shutil.copyfile(first, second)
+
+        self.assertEqual(file_hash(first), file_hash(second))
+
+    def test_finds_identical_images_with_different_names_and_folders(self):
+        folder = os.path.join(self.tmpdir, "nested")
+        os.makedirs(folder)
+        original = os.path.join(self.tmpdir, "original.jpg")
+        copy = os.path.join(folder, "copy.jpg")
+        _make_jpeg_no_exif(original)
+        shutil.copyfile(original, copy)
+
+        duplicates = find_exact_duplicates(self.tmpdir)
+
+        self.assertEqual(len(duplicates), 1)
+        self.assertEqual(next(iter(duplicates.values())), sorted([original, copy]))
+
+    def test_does_not_report_different_images_as_duplicates(self):
+        _make_jpeg_no_exif(os.path.join(self.tmpdir, "first.jpg"))
+        image = Image.new("RGB", (8, 8), color=(255, 0, 0))
+        image.save(os.path.join(self.tmpdir, "second.jpg"), format="JPEG")
+
+        self.assertEqual(find_exact_duplicates(self.tmpdir), {})
 
 
 class TestSelectDirectory(unittest.TestCase):
