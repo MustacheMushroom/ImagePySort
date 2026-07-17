@@ -57,6 +57,17 @@ pub struct FileActionSummary {
 /// Duplicate paths grouped by their SHA-256 file-content hash.
 pub type DuplicateGroups = BTreeMap<String, Vec<PathBuf>>;
 
+/// Live, monotonic counters emitted while a media scan is running.
+#[derive(Debug, Clone, Default)]
+pub struct ScanProgress {
+    pub roots_started: usize,
+    pub directories_visited: usize,
+    pub files_visited: usize,
+    pub media_files_found: usize,
+    pub files_hashed: usize,
+    pub duplicate_groups: usize,
+}
+
 /// Return the kind of a supported, known media file. Unknown extensions are excluded.
 pub fn media_kind(path: &Path) -> Option<MediaKind> {
     let extension = path.extension()?.to_str()?;
@@ -154,11 +165,58 @@ pub fn find_exact_duplicates(directory: &Path) -> io::Result<DuplicateGroups> {
 
 /// Find byte-for-byte duplicate known media files across folders and drives.
 pub fn find_exact_duplicates_in_roots(roots: &[PathBuf]) -> io::Result<DuplicateGroups> {
+    find_exact_duplicates_with_progress(roots, |_| {})
+}
+
+/// Find exact duplicate known media files while reporting scanner progress.
+pub fn find_exact_duplicates_with_progress<F>(
+    roots: &[PathBuf],
+    mut report_progress: F,
+) -> io::Result<DuplicateGroups>
+where
+    F: FnMut(ScanProgress),
+{
+    if roots.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Select at least one scan location.",
+        ));
+    }
+    let mut progress = ScanProgress::default();
     let mut paths_by_size: HashMap<u64, Vec<PathBuf>> = HashMap::new();
-    for path in media_paths(roots)? {
-        if let Ok(metadata) = fs::metadata(&path) {
-            paths_by_size.entry(metadata.len()).or_default().push(path);
+    for root in roots {
+        if !root.is_dir() {
+            continue;
         }
+        progress.roots_started += 1;
+        for entry in WalkDir::new(root)
+            .follow_links(false)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            if entry.file_type().is_dir() {
+                progress.directories_visited += 1;
+                continue;
+            }
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            progress.files_visited += 1;
+            if media_kind(entry.path()).is_some() {
+                progress.media_files_found += 1;
+                if let Ok(metadata) = fs::metadata(entry.path()) {
+                    paths_by_size
+                        .entry(metadata.len())
+                        .or_default()
+                        .push(entry.into_path());
+                }
+            }
+            if progress.files_visited % 250 == 0 {
+                report_progress(progress.clone());
+            }
+        }
+        report_progress(progress.clone());
     }
 
     let mut paths_by_hash: DuplicateGroups = BTreeMap::new();
@@ -167,6 +225,10 @@ pub fn find_exact_duplicates_in_roots(roots: &[PathBuf]) -> io::Result<Duplicate
             if let Ok(hash) = file_hash(&path) {
                 paths_by_hash.entry(hash).or_default().push(path);
             }
+            progress.files_hashed += 1;
+            if progress.files_hashed % 25 == 0 {
+                report_progress(progress.clone());
+            }
         }
     }
 
@@ -174,7 +236,33 @@ pub fn find_exact_duplicates_in_roots(roots: &[PathBuf]) -> io::Result<Duplicate
         paths.sort();
     }
     paths_by_hash.retain(|_, paths| paths.len() > 1);
+    progress.duplicate_groups = paths_by_hash.len();
+    report_progress(progress);
     Ok(paths_by_hash)
+}
+
+/// Produce a plain-text summary suitable for copying or saving alongside a scan.
+pub fn format_scan_report(
+    roots: &[PathBuf],
+    progress: &ScanProgress,
+    groups: &DuplicateGroups,
+) -> String {
+    let duplicate_files: usize = groups.values().map(Vec::len).sum();
+    format!(
+        "Exact media scan report\n\nLocations:\n{}\n\nFolders visited: {}\nFiles visited: {}\nKnown media files: {}\nFiles hashed: {}\nDuplicate groups: {}\nDuplicate files: {}\nExtra copies: {}\n",
+        roots
+            .iter()
+            .map(|path| format!("- {}", path.display()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        progress.directories_visited,
+        progress.files_visited,
+        progress.media_files_found,
+        progress.files_hashed,
+        groups.len(),
+        duplicate_files,
+        duplicate_files.saturating_sub(groups.len())
+    )
 }
 
 /// Return local fixed, removable, and network drive roots according to the selected options.
