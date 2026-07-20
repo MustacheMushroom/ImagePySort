@@ -1,0 +1,11 @@
+name: Lint
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  lint:
+    uses: Aegolius-Labs/.github/.github/workflows/super-linter.yml@main
