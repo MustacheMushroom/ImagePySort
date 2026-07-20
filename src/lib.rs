@@ -1,4 +1,4 @@
-//! Core file-system operations for Image Sorter.
+//! Core file-system operations for MediaSift.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -569,7 +569,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock is after epoch")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("image-sorter-{unique}"));
+        let path = std::env::temp_dir().join(format!("media-sift-{unique}"));
         fs::create_dir_all(&path).expect("create temporary directory");
         path
     }

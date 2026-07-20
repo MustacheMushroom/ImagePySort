@@ -5,7 +5,7 @@ use std::{
 };
 
 use eframe::egui;
-use image_sorter::{
+use media_sift::{
     ArchiveCompression, DuplicateGroups, FileActionSummary, ScanProgress, archive_files,
     computer_scan_roots, find_exact_duplicates_with_progress, format_scan_report,
     permanently_delete_files, recycle_files, sort_images, unkept_duplicate_paths,
@@ -14,9 +14,9 @@ use rfd::FileDialog;
 
 fn main() -> eframe::Result<()> {
     eframe::run_native(
-        "Image Sorter",
+        "MediaSift",
         eframe::NativeOptions::default(),
-        Box::new(|_| Ok(Box::<ImageSorterApp>::default())),
+        Box::new(|_| Ok(Box::<MediaSiftApp>::default())),
     )
 }
 
@@ -40,7 +40,7 @@ struct Review {
 }
 
 #[derive(Default)]
-struct ImageSorterApp {
+struct MediaSiftApp {
     message: String,
     receiver: Option<Receiver<WorkResult>>,
     review: Option<Review>,
@@ -53,7 +53,7 @@ struct ImageSorterApp {
     scan_report: String,
 }
 
-impl ImageSorterApp {
+impl MediaSiftApp {
     fn is_working(&self) -> bool {
         self.receiver.is_some()
     }
@@ -250,7 +250,7 @@ impl ImageSorterApp {
     }
 }
 
-impl eframe::App for ImageSorterApp {
+impl eframe::App for MediaSiftApp {
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
         self.collect_result();
         if self.is_working() {
@@ -310,7 +310,7 @@ impl eframe::App for ImageSorterApp {
     }
 }
 
-impl ImageSorterApp {
+impl MediaSiftApp {
     fn review_ui(&mut self, ui: &mut egui::Ui) {
         let roots = self
             .review

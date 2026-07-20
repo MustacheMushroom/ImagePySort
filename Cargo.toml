@@ -1,8 +1,8 @@
 [package]
-name = "image-sorter"
+name = "media-sift"
 version = "0.1.0"
 edition = "2024"
-description = "Sort images by EXIF date and find exact duplicates"
+description = "Organize images and review exact duplicate media files"
 license = "GPL-3.0-or-later"
 
 [dependencies]
