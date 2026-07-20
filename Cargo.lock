@@ -1621,22 +1621,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "image-sorter"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "kamadak-exif",
- "rfd",
- "serde",
- "serde_json",
- "sha2",
- "trash",
- "walkdir",
- "windows-sys 0.59.0",
- "zip",
-]
-
-[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1837,6 +1821,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62bb907fe88d54d8d9ce32a3cceab4218ed2f6b7d35617cafe9adf84e43919cb"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "media-sift"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "kamadak-exif",
+ "rfd",
+ "serde",
+ "serde_json",
+ "sha2",
+ "trash",
+ "walkdir",
+ "windows-sys 0.59.0",
+ "zip",
 ]
 
 [[package]]
