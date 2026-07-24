@@ -6,8 +6,7 @@ on:
       - main
 
 jobs:
-  release:
-    #checkov:skip=CKV2_GHA_1: This scoped permission is required to create the release and tag.
+  release: #checkov:skip=CKV2_GHA_1: This scoped permission is required to create the release and tag.
     permissions:
       contents: write
     uses: Aegolius-Labs/.github/.github/workflows/conventional-release.yml@main
