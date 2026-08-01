@@ -6,7 +6,9 @@ description = "Organize images and review exact duplicate media files"
 license = "GPL-3.0-or-later"
 
 [dependencies]
+chrono = "0.4"
 eframe = "0.33"
+image = { version = "0.25", default-features = false, features = ["bmp", "png", "tiff"] }
 kamadak-exif = "0.6"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
