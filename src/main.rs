@@ -8,9 +8,10 @@ use std::{
 
 use eframe::egui;
 use media_sift::{
-    ArchiveCompression, DuplicateGroups, FileActionSummary, ScanProgress, archive_files,
-    computer_scan_roots, find_exact_duplicates_with_progress, format_scan_report,
-    permanently_delete_files, recycle_files, sort_images, unkept_duplicate_paths,
+    ArchiveCompression, DuplicateGroups, FileActionSummary, RenameSummary, ScanProgress,
+    archive_files, computer_scan_roots, enhance_photo, find_exact_duplicates_with_progress,
+    format_scan_report, permanently_delete_files, prefix_media_files_with_date, recycle_files,
+    restoration_prompt, sort_images, unkept_duplicate_paths,
 };
 use rfd::FileDialog;
 
@@ -24,6 +25,8 @@ fn main() -> eframe::Result<()> {
 
 enum WorkResult {
     Sorted(Result<usize, String>),
+    Prefixed(Result<RenameSummary, String>),
+    Enhanced(Result<PathBuf, String>),
     Scanned(Result<(DuplicateGroups, Vec<PathBuf>), String>),
     Action(Result<FileActionSummary, String>),
     Progress(ScanProgress),
@@ -51,6 +54,8 @@ struct MediaSiftApp {
     extra_roots: Vec<PathBuf>,
     compression: usize,
     pending_action: Option<PendingAction>,
+    pending_date_prefix: Option<PathBuf>,
+    use_oldest_date: bool,
     scan_progress: Option<ScanProgress>,
     scan_report: String,
 }
@@ -74,6 +79,61 @@ impl MediaSiftApp {
                 sort_images(&directory).map_err(|e| e.to_string()),
             ));
         });
+    }
+    fn choose_date_prefix_folder(&mut self) {
+        if let Some(directory) = FileDialog::new()
+            .set_title("Select a folder whose media filenames will be prefixed")
+            .pick_folder()
+        {
+            self.pending_date_prefix = Some(directory);
+        }
+    }
+    fn run_date_prefix(&mut self, directory: PathBuf) {
+        let use_oldest_date = self.use_oldest_date;
+        let (sender, receiver) = mpsc::channel();
+        self.receiver = Some(receiver);
+        self.pending_date_prefix = None;
+        self.message = format!(
+            "Adding date prefixes to media in {}...",
+            directory.display()
+        );
+        std::thread::spawn(move || {
+            let _ = sender.send(WorkResult::Prefixed(prefix_media_files_with_date(
+                &directory,
+                use_oldest_date,
+            )));
+        });
+    }
+    fn start_photo_enhancement(&mut self) {
+        let Some(photo) = FileDialog::new()
+            .set_title("Select a photo to enhance")
+            .add_filter("Supported images", &["png", "bmp", "tif", "tiff"])
+            .pick_file()
+        else {
+            return;
+        };
+        let (sender, receiver) = mpsc::channel();
+        self.receiver = Some(receiver);
+        self.message = format!("Conservatively enhancing {}...", photo.display());
+        std::thread::spawn(move || {
+            let _ = sender.send(WorkResult::Enhanced(enhance_photo(&photo)));
+        });
+    }
+    fn copy_restoration_prompt(&mut self, context: &egui::Context) {
+        if let Some(photo) = FileDialog::new()
+            .set_title("Select a photo for a restoration prompt")
+            .add_filter(
+                "Images",
+                &["jpg", "jpeg", "png", "bmp", "webp", "tif", "tiff"],
+            )
+            .pick_file()
+        {
+            context.copy_text(restoration_prompt(&photo));
+            self.message = format!(
+                "Copied a conservative restoration prompt for {}.",
+                photo.display()
+            );
+        }
     }
     fn add_folder(&mut self) {
         if let Some(folder) = FileDialog::new()
@@ -180,6 +240,19 @@ impl MediaSiftApp {
                     finished = true;
                     self.message = format!("Done — {moved} image(s) sorted.")
                 }
+                WorkResult::Prefixed(Ok(summary)) => {
+                    finished = true;
+                    self.message = format!(
+                        "Added date prefixes to {} media file(s); skipped {}; {} failure(s).",
+                        summary.renamed,
+                        summary.skipped,
+                        summary.failures.len()
+                    )
+                }
+                WorkResult::Enhanced(Ok(output)) => {
+                    finished = true;
+                    self.message = format!("Saved enhanced copy to {}.", output.display())
+                }
                 WorkResult::Scanned(Ok((groups, roots))) => {
                     finished = true;
                     let kept = groups.values().flatten().cloned().collect();
@@ -209,6 +282,8 @@ impl MediaSiftApp {
                     );
                 }
                 WorkResult::Sorted(Err(error))
+                | WorkResult::Prefixed(Err(error))
+                | WorkResult::Enhanced(Err(error))
                 | WorkResult::Scanned(Err(error))
                 | WorkResult::Action(Err(error)) => {
                     finished = true;
@@ -283,6 +358,25 @@ impl eframe::App for MediaSiftApp {
                     }
                 });
             });
+            ui.separator();
+            ui.heading("Photo utilities");
+            ui.label("These operations preserve the source photo. Filename prefixes rename files after confirmation.");
+            ui.add_enabled_ui(!self.is_working(), |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Prefix media filenames by date").clicked() {
+                        self.choose_date_prefix_folder();
+                    }
+                    ui.checkbox(&mut self.use_oldest_date, "Use oldest creation/modified date");
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Conservatively enhance photo").clicked() {
+                        self.start_photo_enhancement();
+                    }
+                    if ui.button("Copy AI restoration prompt").clicked() {
+                        self.copy_restoration_prompt(ui.ctx());
+                    }
+                });
+            });
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 if self.is_working() { ui.horizontal(|ui| { ui.spinner(); ui.strong("Scan in progress"); }); }
                 if !self.message.is_empty() { ui.label(&self.message); }
@@ -306,6 +400,25 @@ impl eframe::App for MediaSiftApp {
                         if ui.button("Confirm").clicked() { self.run_action(action); }
                     });
                 });
+            }
+            if let Some(directory) = self.pending_date_prefix.clone() {
+                egui::Window::new("Confirm filename prefixes")
+                    .collapsible(false)
+                    .show(context, |ui| {
+                        ui.label(format!(
+                            "Prefix supported media files below {} with their filesystem date?",
+                            directory.display()
+                        ));
+                        ui.label("Files already starting with YYYY-MM-DD - are skipped. This rename cannot be undone by MediaSift.");
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                self.pending_date_prefix = None;
+                            }
+                            if ui.button("Confirm").clicked() {
+                                self.run_date_prefix(directory.clone());
+                            }
+                        });
+                    });
             }
             if self.review.is_some() { ui.separator(); self.review_ui(ui); }
         });
