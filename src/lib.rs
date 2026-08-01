@@ -1,4 +1,6 @@
-//! Core file-system operations for MediaSift.
+//! Core file-system operations and native desktop application for MediaSift.
+
+pub mod desktop;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},

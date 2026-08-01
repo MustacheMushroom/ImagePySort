@@ -43,6 +43,11 @@ cannot accidentally be reused.
 The desktop interface runs scans and sorting in a background thread, so it
 remains responsive while it processes a large folder or drive.
 
+The native application is split into focused state, background-operation, page,
+dialog, and reusable-component modules. See
+[the architecture guide](doc/ARCHITECTURE.md) for module responsibilities and
+dependency rules.
+
 The original imported-script assessment and integration boundary are documented
 in [doc/UTILITY_SCRIPT_INVENTORY.md](doc/UTILITY_SCRIPT_INVENTORY.md).
 
