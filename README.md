@@ -11,28 +11,34 @@ Install the [Rust toolchain](https://www.rust-lang.org/tools/install), then run:
 cargo run --release
 ```
 
-Choose either:
+The interface is organized into four workflows:
 
-- **Select Directory to Sort** to organize photos into `Year/Month` folders
+- **Overview** explains what each workflow changes and links to the right tool.
+- **Duplicate finder** scans local fixed drives by default, with optional
+  removable drives, network drives, and specific folders. The scan is read-only;
+  every match starts marked **Keep**, and file actions stay disabled until at
+  least one copy in every group is protected.
+- **Organize** can sort photos into `Year/Month` folders
   using EXIF `DateTimeOriginal` information.
-- **Prefix media filenames by date** to add a `YYYY-MM-DD - ` filesystem-date
+  It can also prefix media filenames with a `YYYY-MM-DD - ` filesystem-date
   prefix to known media files below a chosen folder. The app skips already
-  prefixed files, prevents filename collisions, and asks for confirmation.
-- **Conservatively enhance photo** to create a separate ` (Enhanced)` PNG,
+  prefixed files, prevents filename collisions, and asks for confirmation before
+  either operation changes files.
+- **Photo tools** can create a separate ` (Enhanced)` PNG,
   BMP, or TIFF sibling image using mild local dust/noise cleanup, contrast, and
-  color adjustments. **Copy AI restoration prompt** copies a conservative,
+  color adjustments. It can also copy a conservative,
   identity-preserving prompt for use with an external image service.
-- **Scan for Exact Duplicates** to scan local fixed drives by default, then
-  optionally add removable drives, network drives, or custom folders. Only
-  supported media formats are hashed. Exact duplicates are identified by their
-  SHA-256 content hash; visually similar images or differently encoded copies
-  are not reported.
+
+Use `Alt+1` through `Alt+4` to move between workflows. The Theme menu can follow
+Windows or explicitly use light or dark mode.
 
 During a scan, the interface shows live folder, file, media-file, hash, and
-duplicate-group counts. Once results are ready, keep selections can be changed
-individually or in bulk by source root. Unkept files can be sent to the Recycle
-Bin, permanently deleted, or archived in a ZIP file that records their
-original locations. The scan itself is read-only.
+duplicate-group counts. Once results are ready, Keep selections can be changed
+individually, by source root, or with a safe bulk choice. Unchecked files can be
+sent to the Recycle Bin, permanently deleted, or archived in a ZIP file that
+records their original locations. Confirmations show the exact number of files
+affected. After recycling or deleting files, the old review is cleared so it
+cannot accidentally be reused.
 
 The desktop interface runs scans and sorting in a background thread, so it
 remains responsive while it processes a large folder or drive.
