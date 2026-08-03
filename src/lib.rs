@@ -83,6 +83,13 @@ pub struct ScanProgress {
     pub duplicate_groups: usize,
 }
 
+/// Final state of a cancellable exact-duplicate scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DuplicateScanOutcome {
+    Completed(DuplicateGroups),
+    Cancelled,
+}
+
 /// Return the kind of a supported, known media file. Unknown extensions are excluded.
 pub fn media_kind(path: &Path) -> Option<MediaKind> {
     let extension = path.extension()?.to_str()?;
@@ -154,11 +161,22 @@ pub fn image_paths(directory: &Path) -> io::Result<Vec<PathBuf>> {
 
 /// Return the SHA-256 hash of a file's raw bytes.
 pub fn file_hash(path: &Path) -> io::Result<String> {
+    file_hash_with_cancel(path, &mut || false)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Interrupted, "File hashing was cancelled."))
+}
+
+fn file_hash_with_cancel<C>(path: &Path, should_cancel: &mut C) -> io::Result<Option<String>>
+where
+    C: FnMut() -> bool,
+{
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0; HASH_CHUNK_SIZE];
 
     loop {
+        if should_cancel() {
+            return Ok(None);
+        }
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -166,7 +184,7 @@ pub fn file_hash(path: &Path) -> io::Result<String> {
         hasher.update(&buffer[..read]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(Some(format!("{:x}", hasher.finalize())))
 }
 
 /// Find byte-for-byte duplicate images below `directory`.
@@ -186,10 +204,32 @@ pub fn find_exact_duplicates_in_roots(roots: &[PathBuf]) -> io::Result<Duplicate
 /// Find exact duplicate known media files while reporting scanner progress.
 pub fn find_exact_duplicates_with_progress<F>(
     roots: &[PathBuf],
-    mut report_progress: F,
+    report_progress: F,
 ) -> io::Result<DuplicateGroups>
 where
     F: FnMut(ScanProgress),
+{
+    match find_exact_duplicates_with_progress_and_cancel(roots, report_progress, || false)? {
+        DuplicateScanOutcome::Completed(groups) => Ok(groups),
+        DuplicateScanOutcome::Cancelled => Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Duplicate scan was cancelled.",
+        )),
+    }
+}
+
+/// Find exact duplicate media while reporting progress and polling for cancellation.
+///
+/// Cancellation is cooperative and checked between directory entries and every
+/// hash read chunk, so the caller can stop long scans without blocking the UI.
+pub fn find_exact_duplicates_with_progress_and_cancel<F, C>(
+    roots: &[PathBuf],
+    mut report_progress: F,
+    mut should_cancel: C,
+) -> io::Result<DuplicateScanOutcome>
+where
+    F: FnMut(ScanProgress),
+    C: FnMut() -> bool,
 {
     if roots.is_empty() {
         return Err(io::Error::new(
@@ -199,32 +239,46 @@ where
     }
     let mut progress = ScanProgress::default();
     let mut paths_by_size: HashMap<u64, Vec<PathBuf>> = HashMap::new();
+    let mut seen_media_paths = HashSet::new();
     for root in roots {
+        if should_cancel() {
+            report_progress(progress);
+            return Ok(DuplicateScanOutcome::Cancelled);
+        }
         if !root.is_dir() {
             continue;
         }
+        let root = absolute_path(root)?;
         progress.roots_started += 1;
         for entry in WalkDir::new(root)
             .follow_links(false)
             .sort_by_file_name()
             .into_iter()
-            .filter_map(Result::ok)
         {
-            if entry.file_type().is_dir() {
+            if should_cancel() {
+                report_progress(progress);
+                return Ok(DuplicateScanOutcome::Cancelled);
+            }
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let file_type = entry.file_type();
+            let path = entry.into_path();
+            if file_type.is_dir() {
                 progress.directories_visited += 1;
                 continue;
             }
-            if !entry.file_type().is_file() {
+            if !file_type.is_file() {
                 continue;
             }
             progress.files_visited += 1;
-            if media_kind(entry.path()).is_some() {
+            if media_kind(&path).is_some() {
+                if !seen_media_paths.insert(path.clone()) {
+                    continue;
+                }
                 progress.media_files_found += 1;
-                if let Ok(metadata) = fs::metadata(entry.path()) {
-                    paths_by_size
-                        .entry(metadata.len())
-                        .or_default()
-                        .push(entry.into_path());
+                if let Ok(metadata) = fs::metadata(&path) {
+                    paths_by_size.entry(metadata.len()).or_default().push(path);
                 }
             }
             if progress.files_visited % 250 == 0 {
@@ -237,8 +291,17 @@ where
     let mut paths_by_hash: DuplicateGroups = BTreeMap::new();
     for paths in paths_by_size.into_values().filter(|paths| paths.len() > 1) {
         for path in paths {
-            if let Ok(hash) = file_hash(&path) {
-                paths_by_hash.entry(hash).or_default().push(path);
+            if should_cancel() {
+                report_progress(progress);
+                return Ok(DuplicateScanOutcome::Cancelled);
+            }
+            match file_hash_with_cancel(&path, &mut should_cancel) {
+                Ok(Some(hash)) => paths_by_hash.entry(hash).or_default().push(path),
+                Ok(None) => {
+                    report_progress(progress);
+                    return Ok(DuplicateScanOutcome::Cancelled);
+                }
+                Err(_) => {}
             }
             progress.files_hashed += 1;
             if progress.files_hashed % 25 == 0 {
@@ -253,7 +316,7 @@ where
     paths_by_hash.retain(|_, paths| paths.len() > 1);
     progress.duplicate_groups = paths_by_hash.len();
     report_progress(progress);
-    Ok(paths_by_hash)
+    Ok(DuplicateScanOutcome::Completed(paths_by_hash))
 }
 
 /// Produce a plain-text summary suitable for copying or saving alongside a scan.
@@ -877,6 +940,54 @@ mod tests {
         fs::write(root.join("second.jpg"), b"def").expect("write second image");
 
         assert!(find_exact_duplicates(&root).unwrap().is_empty());
+        fs::remove_dir_all(root).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn duplicate_scan_can_be_cancelled_cooperatively() {
+        let root = temp_dir();
+        fs::write(root.join("first.jpg"), b"same image bytes").expect("write first image");
+        fs::write(root.join("second.jpg"), b"same image bytes").expect("write second image");
+        let mut cancellation_checks = 0;
+        let mut progress_updates = Vec::new();
+
+        let outcome = find_exact_duplicates_with_progress_and_cancel(
+            std::slice::from_ref(&root),
+            |progress| progress_updates.push(progress),
+            || {
+                cancellation_checks += 1;
+                cancellation_checks >= 3
+            },
+        )
+        .expect("cancel scan cleanly");
+
+        assert_eq!(outcome, DuplicateScanOutcome::Cancelled);
+        assert!(!progress_updates.is_empty());
+        fs::remove_dir_all(root).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn overlapping_scan_roots_do_not_count_the_same_file_twice() {
+        let root = temp_dir();
+        let nested = root.join("nested");
+        fs::create_dir(&nested).expect("create nested directory");
+        fs::write(root.join("first.jpg"), b"same image bytes").expect("write first image");
+        fs::write(nested.join("second.jpg"), b"same image bytes").expect("write second image");
+        let mut final_progress = ScanProgress::default();
+
+        let outcome = find_exact_duplicates_with_progress_and_cancel(
+            &[root.clone(), nested],
+            |progress| final_progress = progress,
+            || false,
+        )
+        .expect("scan overlapping roots");
+
+        let DuplicateScanOutcome::Completed(groups) = outcome else {
+            panic!("scan should complete");
+        };
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups.values().next().expect("duplicate group").len(), 2);
+        assert_eq!(final_progress.media_files_found, 2);
         fs::remove_dir_all(root).expect("remove temporary directory");
     }
 

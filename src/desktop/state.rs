@@ -1,6 +1,14 @@
 //! Desktop application state and pure selection rules.
 
-use std::{collections::HashSet, path::PathBuf, sync::mpsc::Receiver};
+use std::{
+    collections::HashSet,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::Receiver,
+    },
+};
 
 use crate::{DuplicateGroups, FileActionSummary, RenameSummary, ScanProgress};
 
@@ -17,6 +25,7 @@ pub(crate) enum WorkResult {
     },
     Enhanced(Result<PathBuf, String>),
     Scanned(Result<(DuplicateGroups, Vec<PathBuf>), String>),
+    ScanCancelled,
     Action(PendingAction, Result<FileActionSummary, String>),
     Progress(ScanProgress),
 }
@@ -71,6 +80,23 @@ pub(crate) enum Operation {
     Prefix,
     Enhance,
     FileAction,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ScanState {
+    #[default]
+    Idle,
+    Running,
+    Cancelling,
+    Cancelled,
+    Complete,
+    Failed,
+}
+
+impl ScanState {
+    pub(crate) fn is_active(self) -> bool {
+        matches!(self, Self::Running | Self::Cancelling)
+    }
 }
 
 impl Operation {
@@ -170,7 +196,9 @@ pub(crate) struct MediaSiftApp {
     pub(crate) review: Option<Review>,
     pub(crate) include_removable: bool,
     pub(crate) include_network: bool,
-    pub(crate) extra_roots: Vec<PathBuf>,
+    pub(crate) selected_scan_roots: Vec<PathBuf>,
+    pub(crate) scan_state: ScanState,
+    pub(crate) scan_cancel_token: Option<Arc<AtomicBool>>,
     pub(crate) compression: usize,
     pub(crate) pending_action: Option<PendingAction>,
     pub(crate) pending_sort: Option<PathBuf>,
@@ -195,7 +223,9 @@ impl MediaSiftApp {
             review: None,
             include_removable: false,
             include_network: false,
-            extra_roots: Vec::new(),
+            selected_scan_roots: Vec::new(),
+            scan_state: ScanState::Idle,
+            scan_cancel_token: None,
             compression: 2,
             pending_action: None,
             pending_sort: None,
@@ -214,6 +244,14 @@ impl MediaSiftApp {
 
     pub(crate) fn set_notice(&mut self, kind: NoticeKind, text: impl Into<String>) {
         self.notice = Notice::new(kind, text);
+    }
+}
+
+impl Drop for MediaSiftApp {
+    fn drop(&mut self) {
+        if let Some(token) = &self.scan_cancel_token {
+            token.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -266,5 +304,13 @@ mod tests {
         let app = MediaSiftApp::initial();
         assert!(!app.open_sort_folder_when_finished);
         assert!(!app.open_prefix_folder_when_finished);
+    }
+
+    #[test]
+    fn duplicate_scan_starts_idle_without_selected_folders() {
+        let app = MediaSiftApp::initial();
+        assert_eq!(app.scan_state, ScanState::Idle);
+        assert!(app.selected_scan_roots.is_empty());
+        assert!(app.scan_cancel_token.is_none());
     }
 }

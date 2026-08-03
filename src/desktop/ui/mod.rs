@@ -11,7 +11,7 @@ use eframe::egui::{
     TextStyle, Vec2,
 };
 
-use super::state::{MediaSiftApp, Page};
+use super::state::{MediaSiftApp, Operation, Page, ScanState};
 use components::{ACCENT, ACCENT_HOVER, CONTENT_MAX_WIDTH, notice_color};
 
 impl MediaSiftApp {
@@ -161,7 +161,7 @@ impl MediaSiftApp {
             });
     }
 
-    fn status_bar(&self, context: &egui::Context) {
+    fn status_bar(&mut self, context: &egui::Context) {
         egui::TopBottomPanel::bottom("status")
             .frame(
                 Frame::new()
@@ -186,6 +186,17 @@ impl MediaSiftApp {
                             ui.strong(operation.label());
                             ui.label(&self.notice.text);
                         });
+                        if operation == Operation::Scan {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if self.scan_state == ScanState::Running {
+                                    if ui.button("Cancel scan").clicked() {
+                                        self.cancel_media_scan();
+                                    }
+                                } else if self.scan_state == ScanState::Cancelling {
+                                    ui.add_enabled(false, egui::Button::new("Cancelling..."));
+                                }
+                            });
+                        }
                     } else {
                         let color = notice_color(self.notice.kind, ui.visuals().dark_mode);
                         ui.label(RichText::new(self.notice.label()).strong().color(color));

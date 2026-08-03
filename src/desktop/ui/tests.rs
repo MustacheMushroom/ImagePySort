@@ -5,7 +5,7 @@ use eframe::egui::{self, Vec2};
 use crate::{DuplicateGroups, ScanProgress};
 
 use super::configure_style;
-use crate::desktop::state::{MediaSiftApp, Page, Review};
+use crate::desktop::state::{MediaSiftApp, Page, Review, ScanState};
 
 fn sample_review() -> Review {
     let first = PathBuf::from("A/one.jpg");
@@ -29,6 +29,9 @@ fn render_at(size: Vec2, theme: egui::Theme, page: Page, review: Option<Review>)
     let mut app = MediaSiftApp::initial();
     app.page = page;
     app.review = review;
+    if app.review.is_some() {
+        app.scan_state = ScanState::Complete;
+    }
     app.scan_progress = Some(ScanProgress {
         directories_visited: 12,
         files_visited: 240,
@@ -49,6 +52,37 @@ fn render_at(size: Vec2, theme: egui::Theme, page: Page, review: Option<Review>)
                 Page::Organize => app.organize_ui(ui),
                 Page::PhotoTools => app.photo_tools_ui(ui),
             });
+        },
+    );
+    assert!(!output.shapes.is_empty());
+}
+
+fn render_active_scan(size: Vec2, theme: egui::Theme, scan_state: ScanState) {
+    let context = egui::Context::default();
+    context.set_theme(theme);
+    configure_style(&context);
+    let mut app = MediaSiftApp::initial();
+    app.page = Page::Duplicates;
+    app.scan_state = scan_state;
+    app.selected_scan_roots = vec![
+        PathBuf::from("D:/Photos"),
+        PathBuf::from("E:/Family videos"),
+    ];
+    app.scan_progress = Some(ScanProgress {
+        directories_visited: 12,
+        files_visited: 240,
+        media_files_found: 180,
+        files_hashed: 80,
+        duplicate_groups: 2,
+        ..Default::default()
+    });
+    let output = context.run(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            ..Default::default()
+        },
+        |context| {
+            egui::CentralPanel::default().show(context, |ui| app.duplicates_ui(ui));
         },
     );
     assert!(!output.shapes.is_empty());
@@ -104,5 +138,19 @@ fn organize_options_render_at_narrow_and_wide_sizes() {
         egui::Theme::Dark,
         Page::Organize,
         None,
+    );
+}
+
+#[test]
+fn multi_folder_scan_and_cancellation_states_render_responsively() {
+    render_active_scan(
+        Vec2::new(720.0, 700.0),
+        egui::Theme::Light,
+        ScanState::Running,
+    );
+    render_active_scan(
+        Vec2::new(1440.0, 900.0),
+        egui::Theme::Dark,
+        ScanState::Cancelling,
     );
 }

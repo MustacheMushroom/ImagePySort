@@ -3,21 +3,25 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
 };
 
 use eframe::egui;
 use rfd::FileDialog;
 
 use crate::{
-    ArchiveCompression, ScanProgress, archive_files, computer_scan_roots, enhance_photo,
-    find_exact_duplicates_with_progress, format_scan_report, permanently_delete_files,
-    prefix_media_files_with_date, recycle_files, restoration_prompt, sort_images,
-    unkept_duplicate_paths,
+    ArchiveCompression, DuplicateScanOutcome, ScanProgress, archive_files, computer_scan_roots,
+    enhance_photo, find_exact_duplicates_with_progress_and_cancel, format_scan_report,
+    permanently_delete_files, prefix_media_files_with_date, recycle_files, restoration_prompt,
+    sort_images, unkept_duplicate_paths,
 };
 
 use super::state::{
-    MediaSiftApp, Notice, NoticeKind, Operation, PendingAction, Review, WorkResult,
+    MediaSiftApp, Notice, NoticeKind, Operation, PendingAction, Review, ScanState, WorkResult,
 };
 
 enum FolderOpenOutcome {
@@ -56,6 +60,29 @@ fn open_completed_folder(directory: &Path, requested: bool) -> FolderOpenOutcome
         Ok(()) => FolderOpenOutcome::Opened,
         Err(error) => FolderOpenOutcome::Failed(error.to_string()),
     }
+}
+
+fn resolved_scan_roots(
+    selected_roots: &[PathBuf],
+    discovered_drive_roots: Vec<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut roots = if selected_roots.is_empty() {
+        discovered_drive_roots
+    } else {
+        selected_roots.to_vec()
+    };
+    roots.sort();
+    roots.dedup();
+    let mut non_overlapping_roots = Vec::new();
+    for root in roots {
+        if !non_overlapping_roots
+            .iter()
+            .any(|selected: &PathBuf| root.starts_with(selected))
+        {
+            non_overlapping_roots.push(root);
+        }
+    }
+    non_overlapping_roots
 }
 
 impl MediaSiftApp {
@@ -158,27 +185,29 @@ impl MediaSiftApp {
         }
     }
 
-    pub(crate) fn add_folder(&mut self) {
-        if let Some(folder) = FileDialog::new()
-            .set_title("Add a folder to this duplicate scan")
-            .pick_folder()
+    pub(crate) fn add_scan_folders(&mut self) {
+        if let Some(folders) = FileDialog::new()
+            .set_title("Select one or more folders to scan")
+            .pick_folders()
         {
-            if self.extra_roots.contains(&folder) {
-                self.set_notice(
-                    NoticeKind::Info,
-                    format!("{} is already in the scan scope.", folder.display()),
-                );
-            } else {
-                self.extra_roots.push(folder);
-            }
+            self.selected_scan_roots.extend(folders);
+            self.selected_scan_roots.sort();
+            self.selected_scan_roots.dedup();
+            self.set_notice(
+                NoticeKind::Info,
+                format!(
+                    "Selected {} folder(s). Only these folders will be scanned; automatic whole-drive scanning is off.",
+                    self.selected_scan_roots.len()
+                ),
+            );
         }
     }
 
     pub(crate) fn start_media_scan(&mut self) {
-        let mut roots = computer_scan_roots(self.include_removable, self.include_network);
-        roots.extend(self.extra_roots.iter().cloned());
-        roots.sort();
-        roots.dedup();
+        let roots = resolved_scan_roots(
+            &self.selected_scan_roots,
+            computer_scan_roots(self.include_removable, self.include_network),
+        );
         if roots.is_empty() {
             self.set_notice(
                 NoticeKind::Error,
@@ -187,8 +216,11 @@ impl MediaSiftApp {
             return;
         }
         let (sender, receiver) = mpsc::channel();
+        let cancel_token = Arc::new(AtomicBool::new(false));
         self.receiver = Some(receiver);
         self.operation = Some(Operation::Scan);
+        self.scan_state = ScanState::Running;
+        self.scan_cancel_token = Some(Arc::clone(&cancel_token));
         self.set_notice(
             NoticeKind::Info,
             format!(
@@ -201,13 +233,39 @@ impl MediaSiftApp {
         self.scan_report.clear();
         std::thread::spawn(move || {
             let progress_sender = sender.clone();
-            let result = find_exact_duplicates_with_progress(&roots, move |progress| {
-                let _ = progress_sender.send(WorkResult::Progress(progress));
-            })
-            .map(|groups| (groups, roots))
-            .map_err(|error| error.to_string());
-            let _ = sender.send(WorkResult::Scanned(result));
+            let result = find_exact_duplicates_with_progress_and_cancel(
+                &roots,
+                move |progress| {
+                    let _ = progress_sender.send(WorkResult::Progress(progress));
+                },
+                || cancel_token.load(Ordering::Relaxed),
+            );
+            match result {
+                Ok(DuplicateScanOutcome::Completed(groups)) => {
+                    let _ = sender.send(WorkResult::Scanned(Ok((groups, roots))));
+                }
+                Ok(DuplicateScanOutcome::Cancelled) => {
+                    let _ = sender.send(WorkResult::ScanCancelled);
+                }
+                Err(error) => {
+                    let _ = sender.send(WorkResult::Scanned(Err(error.to_string())));
+                }
+            }
         });
+    }
+
+    pub(crate) fn cancel_media_scan(&mut self) {
+        if self.scan_state != ScanState::Running {
+            return;
+        }
+        if let Some(token) = &self.scan_cancel_token {
+            token.store(true, Ordering::Relaxed);
+            self.scan_state = ScanState::Cancelling;
+            self.set_notice(
+                NoticeKind::Info,
+                "Cancelling the duplicate scan. MediaSift will stop after the current filesystem step.",
+            );
+        }
     }
 
     pub(crate) fn selected_unkept(&self) -> Result<Vec<PathBuf>, String> {
@@ -330,6 +388,7 @@ impl MediaSiftApp {
                 }
                 WorkResult::Scanned(Ok((groups, roots))) => {
                     finished = true;
+                    self.scan_state = ScanState::Complete;
                     let mut review = Review {
                         groups,
                         kept: HashSet::new(),
@@ -355,6 +414,16 @@ impl MediaSiftApp {
                                 "Scan complete: {group_count} duplicate group(s) with {extra_copies} extra copy/copies. Nothing is selected for removal yet."
                             )
                         },
+                    );
+                }
+                WorkResult::ScanCancelled => {
+                    finished = true;
+                    self.scan_state = ScanState::Cancelled;
+                    self.review = None;
+                    self.scan_report.clear();
+                    self.set_notice(
+                        NoticeKind::Info,
+                        "Scan cancelled. Scanning never changes files; adjust the locations and start again when ready.",
                     );
                 }
                 WorkResult::Action(action, Ok(summary)) => {
@@ -387,7 +456,6 @@ impl MediaSiftApp {
                     result: Err(error), ..
                 }
                 | WorkResult::Enhanced(Err(error))
-                | WorkResult::Scanned(Err(error))
                 | WorkResult::Action(_, Err(error)) => {
                     finished = true;
                     self.set_notice(
@@ -395,11 +463,20 @@ impl MediaSiftApp {
                         format!("{error} Try again or choose a different file or folder."),
                     );
                 }
+                WorkResult::Scanned(Err(error)) => {
+                    finished = true;
+                    self.scan_state = ScanState::Failed;
+                    self.set_notice(
+                        NoticeKind::Error,
+                        format!("{error} Try again or choose different scan locations."),
+                    );
+                }
             }
         }
         if finished {
             self.receiver = None;
             self.operation = None;
+            self.scan_cancel_token = None;
         }
     }
 
@@ -468,5 +545,67 @@ mod tests {
         assert!(notice.text.contains("The file operation completed"));
         assert!(notice.text.contains("C:/Media"));
         assert!(notice.text.contains("launcher unavailable"));
+    }
+
+    #[test]
+    fn selected_scan_folders_replace_automatic_drive_roots() {
+        let selected = vec![
+            PathBuf::from("D:/Photos"),
+            PathBuf::from("D:/Photos"),
+            PathBuf::from("D:/Photos/Trips"),
+        ];
+        let discovered = vec![PathBuf::from("C:/"), PathBuf::from("D:/")];
+
+        assert_eq!(
+            resolved_scan_roots(&selected, discovered),
+            vec![PathBuf::from("D:/Photos")]
+        );
+    }
+
+    #[test]
+    fn automatic_drive_roots_are_used_only_without_selected_folders() {
+        let discovered = vec![PathBuf::from("D:/"), PathBuf::from("C:/")];
+
+        assert_eq!(
+            resolved_scan_roots(&[], discovered),
+            vec![PathBuf::from("C:/"), PathBuf::from("D:/")]
+        );
+    }
+
+    #[test]
+    fn cancelling_a_running_scan_sets_the_shared_token() {
+        let mut app = MediaSiftApp::initial();
+        let token = Arc::new(AtomicBool::new(false));
+        app.scan_cancel_token = Some(Arc::clone(&token));
+        app.scan_state = ScanState::Running;
+
+        app.cancel_media_scan();
+
+        assert!(token.load(Ordering::Relaxed));
+        assert_eq!(app.scan_state, ScanState::Cancelling);
+        assert!(app.notice.text.contains("Cancelling"));
+    }
+
+    #[test]
+    fn cancelled_scan_result_clears_background_state_and_partial_report() {
+        let mut app = MediaSiftApp::initial();
+        let (sender, receiver) = mpsc::channel();
+        app.receiver = Some(receiver);
+        app.operation = Some(Operation::Scan);
+        app.scan_state = ScanState::Cancelling;
+        app.scan_cancel_token = Some(Arc::new(AtomicBool::new(true)));
+        app.scan_report = "partial report".to_owned();
+        sender
+            .send(WorkResult::ScanCancelled)
+            .expect("send cancellation result");
+
+        app.collect_result();
+
+        assert_eq!(app.scan_state, ScanState::Cancelled);
+        assert!(app.receiver.is_none());
+        assert!(app.operation.is_none());
+        assert!(app.scan_cancel_token.is_none());
+        assert!(app.scan_report.is_empty());
+        assert!(app.notice.text.contains("Scan cancelled"));
     }
 }

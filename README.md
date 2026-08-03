@@ -31,10 +31,12 @@ cargo run --release
 The interface is organized into four workflows:
 
 - **Overview** explains what each workflow changes and links to the right tool.
-- **Duplicate finder** scans local fixed drives by default, with optional
-  removable drives, network drives, and specific folders. The scan is read-only;
-  every match starts marked **Keep**, and file actions stay disabled until at
-  least one copy in every group is protected.
+- **Duplicate finder** scans local fixed drives by default only when no folders
+  are selected. You can select several folders at once or add more folders in a
+  later pass; when the list is non-empty, only those folders are scanned.
+  Removable-drive and network-drive options apply to the automatic drive scope.
+  Scans are read-only and cancellable; every match starts marked **Keep**, and
+  file actions stay disabled until at least one copy in every group is protected.
 - **Organize** can sort photos into `Year/Month` folders
   using EXIF `DateTimeOriginal` information.
   It can also prefix media filenames with a `YYYY-MM-DD - ` filesystem-date
@@ -51,7 +53,9 @@ Use `Alt+1` through `Alt+4` to move between workflows. The Theme menu can follow
 Windows or explicitly use light or dark mode.
 
 During a scan, the interface shows live folder, file, media-file, hash, and
-duplicate-group counts. Once results are ready, Keep selections can be changed
+duplicate-group counts plus a **Cancel scan** action. Cancellation is checked
+throughout directory traversal and file hashing, and never changes files. Once
+results are ready, Keep selections can be changed
 individually, by source root, or with a safe bulk choice. Unchecked files can be
 sent to the Recycle Bin, permanently deleted, or archived in a ZIP file that
 records their original locations. Confirmations show the exact number of files

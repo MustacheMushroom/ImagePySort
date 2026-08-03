@@ -9,7 +9,7 @@ use super::super::components::{
     primary_button, secondary_button, section_card, success_state, warning_banner,
 };
 use crate::ScanProgress;
-use crate::desktop::state::{MediaSiftApp, NoticeKind, PendingAction};
+use crate::desktop::state::{MediaSiftApp, NoticeKind, PendingAction, ScanState};
 
 impl MediaSiftApp {
     pub(crate) fn duplicates_ui(&mut self, ui: &mut egui::Ui) {
@@ -23,43 +23,53 @@ impl MediaSiftApp {
             ui.horizontal(|ui| {
                 number_badge(ui, "1");
                 ui.vertical(|ui| {
-                    ui.heading("Choose where to scan");
-                    ui.label("Local fixed drives are included automatically.");
+                    ui.heading("Choose scan locations");
+                    ui.label(if self.selected_scan_roots.is_empty() {
+                        "No folders selected: all local fixed drives will be scanned."
+                    } else {
+                        "Only the selected folders below will be scanned. Whole-drive scanning is off."
+                    });
                 });
             });
             ui.add_space(14.0);
             ui.add_enabled_ui(!self.is_working(), |ui| {
-                ui.checkbox(&mut self.include_removable, "Include removable drives")
-                    .on_hover_text("Include connected USB drives and memory cards.");
-                ui.checkbox(&mut self.include_network, "Include network drives")
-                    .on_hover_text(
-                        "Include mapped network locations. This may make the scan much slower.",
-                    );
+                ui.add_enabled_ui(self.selected_scan_roots.is_empty(), |ui| {
+                    ui.checkbox(&mut self.include_removable, "Include removable drives")
+                        .on_hover_text(
+                            "Used with the automatic whole-drive scope when no folders are selected.",
+                        );
+                    ui.checkbox(&mut self.include_network, "Include network drives")
+                        .on_hover_text(
+                            "Used with the automatic whole-drive scope when no folders are selected. Network scans may be much slower.",
+                        );
+                });
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
-                    if secondary_button(ui, "Add a specific folder...").clicked() {
-                        self.add_folder();
+                    if secondary_button(ui, "Select one or more folders...").clicked() {
+                        self.add_scan_folders();
                     }
                     let clear = ui.add_enabled(
-                        !self.extra_roots.is_empty(),
-                        egui::Button::new("Clear added folders"),
+                        !self.selected_scan_roots.is_empty(),
+                        egui::Button::new("Use whole-drive default"),
                     );
                     if clear.clicked() {
-                        self.extra_roots.clear();
+                        self.selected_scan_roots.clear();
                     }
                 });
             });
-            if self.extra_roots.is_empty() {
+            if self.selected_scan_roots.is_empty() {
                 ui.add_space(8.0);
                 ui.label(
-                    RichText::new("No extra folders added.")
+                    RichText::new(
+                        "Automatic scope: all local fixed drives, plus any enabled drive types above.",
+                    )
                         .small()
                         .color(ui.visuals().weak_text_color()),
                 );
             } else {
                 ui.add_space(10.0);
                 let mut remove = None;
-                for (index, root) in self.extra_roots.iter().enumerate() {
+                for (index, root) in self.selected_scan_roots.iter().enumerate() {
                     Frame::new()
                         .fill(ui.visuals().faint_bg_color)
                         .corner_radius(7)
@@ -81,12 +91,17 @@ impl MediaSiftApp {
                     ui.add_space(4.0);
                 }
                 if let Some(index) = remove {
-                    self.extra_roots.remove(index);
+                    self.selected_scan_roots.remove(index);
                 }
             }
             ui.add_space(16.0);
             ui.add_enabled_ui(!self.is_working(), |ui| {
-                if primary_button(ui, "Start read-only scan").clicked() {
+                let label = if self.selected_scan_roots.is_empty() {
+                    "Scan configured drives"
+                } else {
+                    "Scan selected folders"
+                };
+                if primary_button(ui, label).clicked() {
                     self.start_media_scan();
                 }
             });
@@ -115,16 +130,27 @@ impl MediaSiftApp {
             ui.horizontal(|ui| {
                 number_badge(ui, if self.review.is_some() { "✓" } else { "2" });
                 ui.vertical(|ui| {
-                    ui.heading(if self.review.is_some() {
-                        "Scan complete"
-                    } else {
-                        "Scanning your media"
-                    });
-                    ui.label(if self.review.is_some() {
-                        "Review the matches below."
-                    } else {
-                        "Large drives can take a while. You can leave this window open in the background."
-                    });
+                    let (heading, detail) = match self.scan_state {
+                        ScanState::Idle | ScanState::Running => (
+                            "Scanning your media",
+                            "Large scans can take a while. You can cancel without changing any files.",
+                        ),
+                        ScanState::Cancelling => (
+                            "Stopping the scan",
+                            "Finishing the current filesystem step, then the scan will stop.",
+                        ),
+                        ScanState::Cancelled => (
+                            "Scan cancelled",
+                            "No files were changed. Adjust the locations above and start again when ready.",
+                        ),
+                        ScanState::Complete => ("Scan complete", "Review the matches below."),
+                        ScanState::Failed => (
+                            "Scan stopped",
+                            "Review the error below, adjust the locations, and try again.",
+                        ),
+                    };
+                    ui.heading(heading);
+                    ui.label(detail);
                 });
             });
             ui.add_space(14.0);
@@ -138,13 +164,23 @@ impl MediaSiftApp {
                     ("Groups", progress.duplicate_groups),
                 ],
             );
-            if self.is_working() {
+            if self.scan_state.is_active() {
                 ui.add_space(12.0);
-                ui.add(
-                    egui::ProgressBar::new(0.5)
-                        .animate(true)
-                        .text("Scanning..."),
-                );
+                ui.add(egui::ProgressBar::new(0.5).animate(true).text(
+                    if self.scan_state == ScanState::Cancelling {
+                        "Cancelling..."
+                    } else {
+                        "Scanning..."
+                    },
+                ));
+                ui.add_space(10.0);
+                if self.scan_state == ScanState::Running {
+                    if secondary_button(ui, "Cancel scan").clicked() {
+                        self.cancel_media_scan();
+                    }
+                } else {
+                    ui.add_enabled(false, egui::Button::new("Cancellation requested"));
+                }
             }
             if !self.scan_report.is_empty() {
                 ui.add_space(12.0);

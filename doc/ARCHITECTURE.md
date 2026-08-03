@@ -40,7 +40,9 @@ flowchart TD
 - UI modules may read and update `MediaSiftApp`, but filesystem work belongs in
   `operations.rs` or the core library.
 - Long-running work must stay off the eframe event loop and communicate through
-  typed `WorkResult` messages.
+  typed `WorkResult` messages. Duplicate scans use a shared atomic cancellation
+  token, poll it during traversal and chunked hashing, and report cancellation
+  back to the UI as a distinct result rather than an error.
 - Reusable visual patterns and semantic colors belong in `components.rs`, not in
   individual workflow pages.
 - Pure selection or validation behavior belongs in `state.rs` and requires unit
