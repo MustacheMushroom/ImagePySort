@@ -56,7 +56,10 @@ During a scan, the interface shows live folder, file, media-file, hash, and
 duplicate-group counts plus a **Cancel scan** action. Cancellation is checked
 throughout directory traversal and file hashing, and never changes files. Once
 results are ready, groups are paginated in batches of 50 so even very large
-reviews remain responsive. Keep selections can be changed individually, by
+reviews remain responsive. Wide windows use two-column workflow and result
+layouts; narrower windows collapse to a single readable column. The page uses
+one continuous scroll surface so result cards cannot overlap action controls.
+Keep selections can be changed individually, by
 source root, or with a safe bulk choice. The safe default stores no duplicate
 path selections in memory; only files explicitly chosen for an action are
 tracked. Unchecked files can be

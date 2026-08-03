@@ -148,34 +148,40 @@ impl MediaSiftApp {
     }
 
     fn status_bar(&mut self, context: &egui::Context) {
+        let compact = context.available_rect().width() < 760.0;
         egui::TopBottomPanel::bottom("status")
             .frame(chrome_frame(context))
             .show(context, |ui| {
-                ui.horizontal(|ui| {
-                    if let Some(operation) = self.operation {
+                let content = |ui: &mut egui::Ui, app: &mut Self| {
+                    if let Some(operation) = app.operation {
                         ui.spinner();
                         ui.vertical(|ui| {
                             ui.strong(operation.label());
-                            ui.label(&self.notice.text);
+                            ui.label(&app.notice.text);
                         });
                         if operation == Operation::Scan {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if self.scan_state == ScanState::Running {
+                                if app.scan_state == ScanState::Running {
                                     if ui.button("Cancel scan").clicked() {
-                                        self.cancel_media_scan();
+                                        app.cancel_media_scan();
                                     }
-                                } else if self.scan_state == ScanState::Cancelling {
+                                } else if app.scan_state == ScanState::Cancelling {
                                     ui.add_enabled(false, egui::Button::new("Cancelling..."));
                                 }
                             });
                         }
                     } else {
-                        let color = notice_color(self.notice.kind, ui.visuals().dark_mode);
-                        ui.label(RichText::new(self.notice.label()).strong().color(color));
+                        let color = notice_color(app.notice.kind, ui.visuals().dark_mode);
+                        ui.label(RichText::new(app.notice.label()).strong().color(color));
                         ui.separator();
-                        ui.label(&self.notice.text);
+                        ui.label(&app.notice.text);
                     }
-                });
+                };
+                if compact {
+                    ui.vertical(|ui| content(ui, self));
+                } else {
+                    ui.horizontal(|ui| content(ui, self));
+                }
             });
     }
 }
@@ -195,8 +201,11 @@ impl eframe::App for MediaSiftApp {
             self.side_bar(context);
         }
 
+        let compact = context.available_rect().width() < 760.0;
+        let horizontal_margin = if compact { 14 } else { 24 };
+        let vertical_margin = if compact { 14 } else { 22 };
         egui::CentralPanel::default()
-            .frame(Frame::new().inner_margin(Margin::symmetric(24, 22)))
+            .frame(Frame::new().inner_margin(Margin::symmetric(horizontal_margin, vertical_margin)))
             .show(context, |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("main_content")

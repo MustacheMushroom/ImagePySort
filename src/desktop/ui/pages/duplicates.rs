@@ -10,6 +10,8 @@ use crate::ScanProgress;
 use crate::desktop::state::{MediaSiftApp, NoticeKind, PendingAction, ScanState};
 
 const DUPLICATE_GROUPS_PER_PAGE: usize = 50;
+const TWO_COLUMN_WORKFLOW_MIN_WIDTH: f32 = 1_040.0;
+const TWO_COLUMN_RESULTS_MIN_WIDTH: f32 = 980.0;
 
 impl MediaSiftApp {
     pub(crate) fn duplicates_ui(&mut self, ui: &mut egui::Ui) {
@@ -19,6 +21,36 @@ impl MediaSiftApp {
             "Scan locally, compare contents with SHA-256, then decide which copies to keep. Scanning never changes a file.",
         );
 
+        let progress = self.scan_progress.clone();
+        if ui.available_width() >= TWO_COLUMN_WORKFLOW_MIN_WIDTH
+            && let Some(progress) = progress.as_ref()
+        {
+            ui.columns(2, |columns| {
+                self.scan_scope_card(&mut columns[0]);
+                self.scan_progress_ui(&mut columns[1], progress);
+            });
+        } else {
+            self.scan_scope_card(ui);
+            if let Some(progress) = progress.as_ref() {
+                ui.add_space(16.0);
+                self.scan_progress_ui(ui, progress);
+            }
+        }
+
+        if self.review.is_some() {
+            ui.add_space(16.0);
+            self.review_ui(ui);
+        } else if !self.is_working() {
+            ui.add_space(16.0);
+            empty_state(
+                ui,
+                "Results will appear here",
+                "After the scan, exact matches are grouped together. Every copy starts marked Keep, so nothing is acted on by accident.",
+            );
+        }
+    }
+
+    fn scan_scope_card(&mut self, ui: &mut egui::Ui) {
         section_card(ui, |ui| {
             ui.horizontal(|ui| {
                 number_badge(ui, "1");
@@ -106,23 +138,6 @@ impl MediaSiftApp {
                 }
             });
         });
-
-        if let Some(progress) = self.scan_progress.clone() {
-            ui.add_space(16.0);
-            self.scan_progress_ui(ui, &progress);
-        }
-
-        if self.review.is_some() {
-            ui.add_space(16.0);
-            self.review_ui(ui);
-        } else if !self.is_working() {
-            ui.add_space(16.0);
-            empty_state(
-                ui,
-                "Results will appear here",
-                "After the scan, exact matches are grouped together. Every copy starts marked Keep, so nothing is acted on by accident.",
-            );
-        }
     }
 
     pub(crate) fn scan_progress_ui(&mut self, ui: &mut egui::Ui, progress: &ScanProgress) {
@@ -211,13 +226,52 @@ impl MediaSiftApp {
         let roots = review.roots().to_vec();
         let page_count = review.page_count(DUPLICATE_GROUPS_PER_PAGE);
         self.review_page = self.review_page.min(page_count.saturating_sub(1));
+        let two_column_workflow = ui.available_width() >= TWO_COLUMN_WORKFLOW_MIN_WIDTH;
 
+        if two_column_workflow {
+            ui.columns(2, |columns| {
+                self.review_selection_card(
+                    &mut columns[0],
+                    groups,
+                    total_files,
+                    extra_copies,
+                    action_count,
+                    &roots,
+                );
+                let (action_count, valid) = self.review_status();
+                self.review_action_card(&mut columns[1], action_count, valid);
+            });
+        } else {
+            self.review_selection_card(ui, groups, total_files, extra_copies, action_count, &roots);
+        }
+
+        ui.add_space(12.0);
+        self.review_results(ui, groups, page_count);
+
+        if !two_column_workflow {
+            let (action_count, valid) = self.review_status();
+            ui.add_space(12.0);
+            self.review_action_card(ui, action_count, valid);
+        }
+    }
+
+    fn review_selection_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        groups: usize,
+        total_files: usize,
+        extra_copies: usize,
+        action_count: usize,
+        roots: &[std::path::PathBuf],
+    ) {
         section_card(ui, |ui| {
             ui.horizontal(|ui| {
                 number_badge(ui, "3");
                 ui.vertical(|ui| {
                     ui.heading("Choose which copies to keep");
-                    ui.label("Checked files stay where they are. Unchecked files become selected for the action below.");
+                    ui.label(
+                        "Checked files stay in place. Clear Keep to select a copy for action.",
+                    );
                 });
             });
             ui.add_space(14.0);
@@ -238,110 +292,143 @@ impl MediaSiftApp {
                 {
                     review.keep_all();
                 }
-                if secondary_button(ui, "Keep the first copy in each group").clicked()
+                if secondary_button(ui, "Keep one copy per group").clicked()
                     && let Some(review) = &mut self.review
                 {
                     review.keep_first_in_each_group();
                 }
             });
-            ui.add_space(10.0);
-            ui.collapsing("Prefer copies from a location", |ui| {
-                ui.label("These controls mark copies in the chosen location as Keep.");
-                for root in roots {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(root.display().to_string());
-                        if ui.small_button("Keep from here").clicked() {
-                            self.select_source(&root, false);
+            if !roots.is_empty() {
+                ui.add_space(10.0);
+                ui.collapsing("Prefer copies from a location", |ui| {
+                    ui.label("Mark copies in a scanned location as Keep.");
+                    for root in roots {
+                        Frame::new()
+                            .fill(ui.visuals().faint_bg_color)
+                            .corner_radius(8)
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .show(ui, |ui| {
+                                ui.set_min_width(ui.available_width());
+                                ui.label(root.display().to_string());
+                                ui.horizontal_wrapped(|ui| {
+                                    if ui.small_button("Keep from here").clicked() {
+                                        self.select_source(root, false);
+                                    }
+                                    if ui.small_button("Keep only from here").clicked() {
+                                        self.select_source(root, true);
+                                    }
+                                });
+                            });
+                    }
+                });
+            }
+        });
+    }
+
+    fn review_results(&mut self, ui: &mut egui::Ui, groups: usize, page_count: usize) {
+        let bounds = self
+            .review
+            .as_ref()
+            .expect("review exists")
+            .page_bounds(self.review_page, DUPLICATE_GROUPS_PER_PAGE);
+        section_card(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "Duplicate groups {}–{} of {groups}",
+                        bounds.start + 1,
+                        bounds.end,
+                    ))
+                    .heading()
+                    .strong(),
+                );
+                if page_count > 1 {
+                    ui.separator();
+                    ui.add_enabled_ui(self.review_page > 0, |ui| {
+                        if ui.small_button("First").clicked() {
+                            self.review_page = 0;
                         }
-                        if ui.small_button("Keep only from here").clicked() {
-                            self.select_source(&root, true);
+                        if ui.small_button("Previous").clicked() {
+                            self.review_page = self.review_page.saturating_sub(1);
+                        }
+                    });
+                    let mut page_number = self.review_page + 1;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut page_number)
+                                .range(1..=page_count)
+                                .prefix("Page "),
+                        )
+                        .on_hover_text("Type or drag to jump directly to a results page")
+                        .changed()
+                    {
+                        self.review_page = page_number - 1;
+                    }
+                    ui.label(format!("of {page_count}"));
+                    ui.add_enabled_ui(self.review_page + 1 < page_count, |ui| {
+                        if ui.small_button("Next").clicked() {
+                            self.review_page += 1;
+                        }
+                        if ui.small_button("Last").clicked() {
+                            self.review_page = page_count - 1;
                         }
                     });
                 }
             });
-        });
-
-        ui.add_space(12.0);
-        let bounds = self
-            .review
-            .as_ref()
-            .expect("review exists")
-            .page_bounds(self.review_page, DUPLICATE_GROUPS_PER_PAGE);
-        ui.horizontal_wrapped(|ui| {
             ui.label(
-                RichText::new(format!(
-                    "Groups {}–{} of {groups} · Page {} of {page_count}",
-                    bounds.start + 1,
-                    bounds.end,
-                    self.review_page + 1,
-                ))
-                .strong(),
-            );
-            ui.add_enabled_ui(self.review_page > 0, |ui| {
-                if ui.small_button("First").clicked() {
-                    self.review_page = 0;
-                }
-                if ui.small_button("Previous").clicked() {
-                    self.review_page = self.review_page.saturating_sub(1);
-                }
-            });
-            let mut page_number = self.review_page + 1;
-            if ui
-                .add(
-                    egui::DragValue::new(&mut page_number)
-                        .range(1..=page_count)
-                        .prefix("Go to page "),
-                )
-                .on_hover_text("Type or drag to jump directly to a results page")
-                .changed()
-            {
-                self.review_page = page_number - 1;
-            }
-            ui.add_enabled_ui(self.review_page + 1 < page_count, |ui| {
-                if ui.small_button("Next").clicked() {
-                    self.review_page += 1;
-                }
-                if ui.small_button("Last").clicked() {
-                    self.review_page = page_count - 1;
-                }
-            });
-        });
-        ui.label(
-            RichText::new("Only 50 groups are shown at once to keep very large scans responsive.")
+                RichText::new(if page_count > 1 {
+                    "Up to 50 groups are shown per page. Checked copies are protected."
+                } else {
+                    "Checked copies are protected. Clear Keep only on copies you want to process."
+                })
                 .small()
                 .color(ui.visuals().weak_text_color()),
-        );
-        ui.add_space(8.0);
+            );
+        });
+        ui.add_space(10.0);
 
         let bounds = self
             .review
             .as_ref()
             .expect("review exists")
             .page_bounds(self.review_page, DUPLICATE_GROUPS_PER_PAGE);
+        let two_columns = ui.available_width() >= TWO_COLUMN_RESULTS_MIN_WIDTH;
         let changes = {
             let review = self.review.as_ref().expect("review exists");
+            let page_groups: Vec<_> = review
+                .groups()
+                .iter()
+                .skip(bounds.start)
+                .take(bounds.len())
+                .enumerate()
+                .collect();
             let mut changes = Vec::new();
-            egui::ScrollArea::vertical()
-                .id_salt(("duplicate_groups", self.review_page))
-                .max_height(500.0)
-                .show(ui, |ui| {
-                    for (offset, (group, paths)) in review
-                        .groups()
-                        .iter()
-                        .skip(bounds.start)
-                        .take(bounds.len())
-                        .enumerate()
-                    {
+            if two_columns {
+                ui.columns(2, |columns| {
+                    for (offset, (group, paths)) in &page_groups {
+                        let column = *offset % 2;
                         changes.extend(duplicate_group_card(
-                            ui,
-                            bounds.start + offset,
+                            &mut columns[column],
+                            bounds.start + *offset,
                             group,
                             paths,
                             review,
                         ));
-                        ui.add_space(10.0);
+                        columns[column].add_space(10.0);
                     }
                 });
+            } else {
+                for (offset, (group, paths)) in page_groups {
+                    changes.extend(duplicate_group_card(
+                        ui,
+                        bounds.start + offset,
+                        group,
+                        paths,
+                        review,
+                    ));
+                    ui.add_space(10.0);
+                }
+            }
             changes
         };
         if let Some(review) = &mut self.review {
@@ -349,19 +436,22 @@ impl MediaSiftApp {
                 review.set_kept(&change.group, &change.path, change.keep);
             }
         }
+    }
 
-        let (action_count, valid) = self.review.as_ref().map_or((0, true), |review| {
+    fn review_status(&self) -> (usize, bool) {
+        self.review.as_ref().map_or((0, true), |review| {
             (review.action_count(), review.every_group_has_keeper())
-        });
+        })
+    }
 
-        ui.add_space(6.0);
+    fn review_action_card(&mut self, ui: &mut egui::Ui, action_count: usize, valid: bool) {
         section_card(ui, |ui| {
             ui.horizontal(|ui| {
                 number_badge(ui, "4");
                 ui.vertical(|ui| {
-                    ui.heading("Choose what happens to selected copies");
+                    ui.heading("Process selected copies");
                     ui.label(format!(
-                        "{action_count} file(s) are selected. At least one copy in every group must remain marked Keep."
+                        "{action_count} selected. Every duplicate group must keep at least one copy."
                     ));
                 });
             });
@@ -399,7 +489,6 @@ impl MediaSiftApp {
                     });
             });
             ui.add_space(10.0);
-            self.report_actions(ui);
         });
     }
 

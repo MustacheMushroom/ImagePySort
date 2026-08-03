@@ -45,6 +45,10 @@ flowchart TD
   back to the UI as a distinct result rather than an error.
 - Reusable visual patterns and semantic colors belong in `components.rs`, not in
   individual workflow pages.
+- Cards and banners fill the width assigned by their responsive container.
+  Pages may switch between one and two columns at content-based breakpoints,
+  but nested vertical scroll areas are prohibited inside the main page scroll;
+  they clip unpredictably in egui and can overlap later workflow sections.
 - Pure selection or validation behavior belongs in `state.rs` and requires unit
   tests. Rendering behavior belongs in `ui/tests.rs`.
 - Duplicate review state uses a sparse set of paths selected for action. The
