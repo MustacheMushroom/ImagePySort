@@ -48,6 +48,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 function Get-ZipDocumentExtension {
     [CmdletBinding()]
+    [OutputType([string])]
     param (
         [Parameter(Mandatory = $true)]
         [string]$ZipFilePath

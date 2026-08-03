@@ -73,24 +73,7 @@ param (
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-
-function Write-MediaSiftLog {
-    param (
-        [string]$Message,
-        [string]$Level = "INFO",
-        [string]$LogPath
-    )
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $formattedMsg = "[$timestamp] [$Level] $Message"
-    Write-Information $formattedMsg -InformationAction Continue
-    if ($LogPath -and -not $global:WhatIfPreference) {
-        try {
-            [System.IO.File]::AppendAllText($LogPath, "$formattedMsg`r`n")
-        } catch {
-            Write-Warning "Could not append to log file '$LogPath': $_"
-        }
-    }
-}
+. (Join-Path $PSScriptRoot 'MediaSift.Logging.ps1')
 
 function Get-UniqueDestinationPath {
     param (
@@ -130,6 +113,24 @@ function Get-DestinationPathForFile {
     }
 
     return Get-UniqueDestinationPath -TargetFolder $targetFolder -FileName $File.Name
+}
+
+function Move-NonDuplicateFile {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param (
+        [System.IO.FileInfo]$File,
+        [string]$TargetFolder,
+        [string]$RootPath,
+        [bool]$ShouldPreserveStructure,
+        [string]$LogPath,
+        [System.Management.Automation.PSCmdlet]$Caller
+    )
+
+    $targetPath = Get-DestinationPathForFile -BaseTargetFolder $TargetFolder -File $File -RootPath $RootPath -ShouldPreserveStructure $ShouldPreserveStructure
+    if ($Caller.ShouldProcess($File.FullName, "Move non-duplicate file to $targetPath")) {
+        Move-Item -Path $File.FullName -Destination $targetPath
+        Write-MediaSiftLog "Moved non-duplicate file: '$($File.FullName)' -> '$targetPath'" -LogPath $LogPath
+    }
 }
 
 function Compare-FilesByteByByte {
@@ -221,11 +222,7 @@ if ($IncludeUnique.IsPresent -or $MoveLeftovers.IsPresent) {
     $targetDir = if ($MoveLeftovers.IsPresent) { $leftFullPath } else { $origFullPath }
     foreach ($u in $uniqueSizeFiles) {
         $file = $u.Group[0]
-        $targetPath = Get-DestinationPathForFile -BaseTargetFolder $targetDir -File $file -RootPath $resolvedPath -ShouldPreserveStructure $PreserveStructure.IsPresent
-        if ($psCmdlet.ShouldProcess($file.FullName, "Move non-duplicate file to $targetPath")) {
-            Move-Item -Path $file.FullName -Destination $targetPath
-            Write-MediaSiftLog "Moved non-duplicate file: '$($file.FullName)' -> '$targetPath'" -LogPath $logFullPath
-        }
+        Move-NonDuplicateFile -File $file -TargetFolder $targetDir -RootPath $resolvedPath -ShouldPreserveStructure $PreserveStructure.IsPresent -LogPath $logFullPath -Caller $psCmdlet
     }
 }
 
@@ -271,11 +268,7 @@ foreach ($group in $candidateGroups) {
         } elseif ($IncludeUnique.IsPresent -or $MoveLeftovers.IsPresent) {
             $file = $hGroup.Group[0].File
             $targetDir = if ($MoveLeftovers.IsPresent) { $leftFullPath } else { $origFullPath }
-            $targetPath = Get-DestinationPathForFile -BaseTargetFolder $targetDir -File $file -RootPath $resolvedPath -ShouldPreserveStructure $PreserveStructure.IsPresent
-            if ($psCmdlet.ShouldProcess($file.FullName, "Move non-duplicate file to $targetPath")) {
-                Move-Item -Path $file.FullName -Destination $targetPath
-                Write-MediaSiftLog "Moved non-duplicate file: '$($file.FullName)' -> '$targetPath'" -LogPath $logFullPath
-            }
+            Move-NonDuplicateFile -File $file -TargetFolder $targetDir -RootPath $resolvedPath -ShouldPreserveStructure $PreserveStructure.IsPresent -LogPath $logFullPath -Caller $psCmdlet
         }
     }
 }

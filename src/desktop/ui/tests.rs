@@ -2,25 +2,10 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, Vec2};
 
-use crate::{DuplicateGroups, ScanProgress};
+use crate::ScanProgress;
 
 use super::configure_style;
 use crate::desktop::state::{MediaSiftApp, Page, Review, ScanState};
-
-fn sample_review() -> Review {
-    let first = PathBuf::from("A/one.jpg");
-    let second = PathBuf::from("B/one.jpg");
-    let third = PathBuf::from("C/two.mp4");
-    let fourth = PathBuf::from("D/two.mp4");
-    let fifth = PathBuf::from("E/two.mp4");
-    Review {
-        groups: DuplicateGroups::from([
-            ("first".to_owned(), vec![first, second]),
-            ("second".to_owned(), vec![third, fourth, fifth]),
-        ]),
-        ..Default::default()
-    }
-}
 
 fn test_context(theme: egui::Theme) -> egui::Context {
     let context = egui::Context::default();
@@ -40,6 +25,19 @@ fn test_progress() -> ScanProgress {
     }
 }
 
+fn render_frame(context: &egui::Context, size: Vec2, mut content: impl FnMut(&mut egui::Ui)) {
+    let output = context.run(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            ..Default::default()
+        },
+        |context| {
+            egui::CentralPanel::default().show(context, |ui| content(ui));
+        },
+    );
+    assert!(!output.shapes.is_empty());
+}
+
 fn render_at(size: Vec2, theme: egui::Theme, page: Page, review: Option<Review>) {
     let context = test_context(theme);
     let mut app = MediaSiftApp::initial();
@@ -49,21 +47,12 @@ fn render_at(size: Vec2, theme: egui::Theme, page: Page, review: Option<Review>)
         app.scan_state = ScanState::Complete;
     }
     app.scan_progress = Some(test_progress());
-    let output = context.run(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-            ..Default::default()
-        },
-        |context| {
-            egui::CentralPanel::default().show(context, |ui| match app.page {
-                Page::Overview => app.overview_ui(ui),
-                Page::Duplicates => app.duplicates_ui(ui),
-                Page::Organize => app.organize_ui(ui),
-                Page::PhotoTools => app.photo_tools_ui(ui),
-            });
-        },
-    );
-    assert!(!output.shapes.is_empty());
+    render_frame(&context, size, |ui| match app.page {
+        Page::Overview => app.overview_ui(ui),
+        Page::Duplicates => app.duplicates_ui(ui),
+        Page::Organize => app.organize_ui(ui),
+        Page::PhotoTools => app.photo_tools_ui(ui),
+    });
 }
 
 fn render_active_scan(size: Vec2, theme: egui::Theme, scan_state: ScanState) {
@@ -76,16 +65,7 @@ fn render_active_scan(size: Vec2, theme: egui::Theme, scan_state: ScanState) {
         PathBuf::from("E:/Family videos"),
     ];
     app.scan_progress = Some(test_progress());
-    let output = context.run(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-            ..Default::default()
-        },
-        |context| {
-            egui::CentralPanel::default().show(context, |ui| app.duplicates_ui(ui));
-        },
-    );
-    assert!(!output.shapes.is_empty());
+    render_frame(&context, size, |ui| app.duplicates_ui(ui));
 }
 
 #[test]
@@ -106,7 +86,7 @@ fn overview_layout_renders_at_narrow_and_wide_sizes() {
 
 #[test]
 fn duplicate_review_renders_in_both_themes() {
-    let mut light_review = sample_review();
+    let mut light_review = Review::sample_for_tests();
     light_review.keep_all();
     render_at(
         Vec2::new(820.0, 700.0),
@@ -115,7 +95,7 @@ fn duplicate_review_renders_in_both_themes() {
         Some(light_review),
     );
 
-    let mut dark_review = sample_review();
+    let mut dark_review = Review::sample_for_tests();
     dark_review.keep_first_in_each_group();
     render_at(
         Vec2::new(1280.0, 800.0),

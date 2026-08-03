@@ -48,6 +48,8 @@ records their behavior and the deliberate MediaSift integration boundary.
 
 - The imported scripts are retained for their standalone workflows. Maintenance
   changes are limited to compatibility, logging, and static-analysis hygiene.
+- The two logging utilities share `MediaSift.Logging.ps1`; keep that helper next
+  to the scripts when copying either workflow elsewhere.
 - MediaSift scans and renames only known image, video, and audio formats.
 - Photo enhancement always creates a new file. Filename prefixing is confirmed
   in the UI before any rename occurs.

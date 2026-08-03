@@ -150,6 +150,22 @@ pub(crate) struct Review {
 }
 
 impl Review {
+    #[cfg(test)]
+    pub(crate) fn sample_for_tests() -> Self {
+        let first = PathBuf::from("A/one.jpg");
+        let second = PathBuf::from("B/one.jpg");
+        let third = PathBuf::from("C/two.mp4");
+        let fourth = PathBuf::from("D/two.mp4");
+        let fifth = PathBuf::from("E/two.mp4");
+        Self {
+            groups: DuplicateGroups::from([
+                ("first".to_owned(), vec![first, second]),
+                ("second".to_owned(), vec![third, fourth, fifth]),
+            ]),
+            ..Default::default()
+        }
+    }
+
     pub(crate) fn total_files(&self) -> usize {
         self.groups.values().map(Vec::len).sum()
     }
@@ -259,24 +275,9 @@ impl Drop for MediaSiftApp {
 mod tests {
     use super::*;
 
-    fn sample_review() -> Review {
-        let first = PathBuf::from("A/one.jpg");
-        let second = PathBuf::from("B/one.jpg");
-        let third = PathBuf::from("C/two.mp4");
-        let fourth = PathBuf::from("D/two.mp4");
-        let fifth = PathBuf::from("E/two.mp4");
-        Review {
-            groups: DuplicateGroups::from([
-                ("first".to_owned(), vec![first, second]),
-                ("second".to_owned(), vec![third, fourth, fifth]),
-            ]),
-            ..Default::default()
-        }
-    }
-
     #[test]
     fn review_metrics_distinguish_files_from_extra_copies() {
-        let review = sample_review();
+        let review = Review::sample_for_tests();
         assert_eq!(review.groups.len(), 2);
         assert_eq!(review.total_files(), 5);
         assert_eq!(review.extra_copies(), 3);
@@ -284,7 +285,7 @@ mod tests {
 
     #[test]
     fn keep_first_selects_every_extra_copy_for_action() {
-        let mut review = sample_review();
+        let mut review = Review::sample_for_tests();
         review.keep_first_in_each_group();
         assert!(review.every_group_has_keeper());
         assert_eq!(review.kept.len(), 2);
@@ -293,7 +294,7 @@ mod tests {
 
     #[test]
     fn keep_all_is_the_safe_default() {
-        let mut review = sample_review();
+        let mut review = Review::sample_for_tests();
         review.keep_all();
         assert!(review.every_group_has_keeper());
         assert_eq!(review.action_count(), 0);

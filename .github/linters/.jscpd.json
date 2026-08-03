@@ -1,5 +1,0 @@
-{
-  "pattern": "src/**/*.rs",
-  "ignore": ["**/tests.rs", "**/tests/**"],
-  "threshold": 0
-}
