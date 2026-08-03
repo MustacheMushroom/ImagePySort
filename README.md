@@ -55,15 +55,19 @@ Windows or explicitly use light or dark mode.
 During a scan, the interface shows live folder, file, media-file, hash, and
 duplicate-group counts plus a **Cancel scan** action. Cancellation is checked
 throughout directory traversal and file hashing, and never changes files. Once
-results are ready, Keep selections can be changed
-individually, by source root, or with a safe bulk choice. Unchecked files can be
+results are ready, groups are paginated in batches of 50 so even very large
+reviews remain responsive. Keep selections can be changed individually, by
+source root, or with a safe bulk choice. The safe default stores no duplicate
+path selections in memory; only files explicitly chosen for an action are
+tracked. Unchecked files can be
 sent to the Recycle Bin, permanently deleted, or archived in a ZIP file that
 records their original locations. Confirmations show the exact number of files
 affected. After recycling or deleting files, the old review is cleared so it
 cannot accidentally be reused.
 
-The desktop interface runs scans and sorting in a background thread, so it
-remains responsive while it processes a large folder or drive.
+The desktop interface runs scans and sorting in a background thread. Completed
+duplicate reviews cache their summary counts and render a bounded page rather
+than rebuilding every result row on each frame.
 
 The native application is split into focused state, background-operation, page,
 dialog, and reusable-component modules. See

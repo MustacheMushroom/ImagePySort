@@ -47,5 +47,10 @@ flowchart TD
   individual workflow pages.
 - Pure selection or validation behavior belongs in `state.rs` and requires unit
   tests. Rendering behavior belongs in `ui/tests.rs`.
+- Duplicate review state uses a sparse set of paths selected for action. The
+  safe keep-everything default must not clone every result path. Summary counts
+  are cached when a review is created, and the page renderer may materialize at
+  most 50 groups per frame. Bulk choices can scan the result set only in direct
+  response to a user action.
 - A new top-level workflow should add a `Page` variant, a page renderer, and one
   navigation entry. It should not add behavior to `src/main.rs`.
