@@ -40,8 +40,16 @@ impl MediaSiftApp {
             check_line(ui, "Reads EXIF DateTimeOriginal capture dates");
             check_line(ui, "Leaves photos without a usable capture date in place");
             check_line(ui, "Adds a numeric suffix when a filename already exists");
-            ui.add_space(16.0);
+            ui.add_space(10.0);
             ui.add_enabled_ui(!self.is_working(), |ui| {
+                ui.checkbox(
+                    &mut self.open_sort_folder_when_finished,
+                    "Open the selected folder when finished",
+                )
+                .on_hover_text(
+                    "Opens the folder in File Explorer after the operation completes successfully.",
+                );
+                ui.add_space(12.0);
                 if primary_button(ui, "Choose folder and review...").clicked() {
                     self.choose_sort_folder();
                 }
@@ -58,13 +66,22 @@ impl MediaSiftApp {
             check_line(ui, "Skips files that already start with a date");
             check_line(ui, "Prevents filename collisions");
             ui.add_space(10.0);
-            ui.checkbox(
-                &mut self.use_oldest_date,
-                "Use the older of created and modified dates",
-            )
-            .on_hover_text("By default, MediaSift uses the file's creation date when available.");
-            ui.add_space(12.0);
             ui.add_enabled_ui(!self.is_working(), |ui| {
+                ui.checkbox(
+                    &mut self.use_oldest_date,
+                    "Use the older of created and modified dates",
+                )
+                .on_hover_text(
+                    "By default, MediaSift uses the file's creation date when available.",
+                );
+                ui.checkbox(
+                    &mut self.open_prefix_folder_when_finished,
+                    "Open the selected folder when finished",
+                )
+                .on_hover_text(
+                    "Opens the folder in File Explorer after the operation completes successfully.",
+                );
+                ui.add_space(12.0);
                 if primary_button(ui, "Choose folder and review...").clicked() {
                     self.choose_date_prefix_folder();
                 }

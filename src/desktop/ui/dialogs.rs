@@ -59,7 +59,14 @@ impl MediaSiftApp {
                     "MediaSift will move images with capture dates below:\n{}",
                     directory.display()
                 ),
-                "Destination folders use Year/Month. Files without a usable capture date stay in place. MediaSift does not provide an undo command.",
+                &format!(
+                    "Destination folders use Year/Month. Files without a usable capture date stay in place. MediaSift does not provide an undo command.{}",
+                    if self.open_sort_folder_when_finished {
+                        " File Explorer will open this folder after a successful run."
+                    } else {
+                        ""
+                    }
+                ),
                 "Organize images",
             )
         {
@@ -78,7 +85,14 @@ impl MediaSiftApp {
                     "MediaSift will add YYYY-MM-DD prefixes to known media files below:\n{}",
                     directory.display()
                 ),
-                "Already-prefixed files are skipped and name collisions are prevented. MediaSift does not provide an undo command.",
+                &format!(
+                    "Already-prefixed files are skipped and name collisions are prevented. MediaSift does not provide an undo command.{}",
+                    if self.open_prefix_folder_when_finished {
+                        " File Explorer will open this folder after a successful run."
+                    } else {
+                        ""
+                    }
+                ),
                 "Add date prefixes",
             )
         {

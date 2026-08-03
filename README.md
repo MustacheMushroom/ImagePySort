@@ -40,7 +40,8 @@ The interface is organized into four workflows:
   It can also prefix media filenames with a `YYYY-MM-DD - ` filesystem-date
   prefix to known media files below a chosen folder. The app skips already
   prefixed files, prevents filename collisions, and asks for confirmation before
-  either operation changes files.
+  either operation changes files. Each organizer can optionally open the
+  selected result folder in File Explorer after a successful run.
 - **Photo tools** can create a separate ` (Enhanced)` PNG,
   BMP, or TIFF sibling image using mild local dust/noise cleanup, contrast, and
   color adjustments. It can also copy a conservative,

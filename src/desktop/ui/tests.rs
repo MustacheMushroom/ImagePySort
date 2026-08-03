@@ -90,3 +90,19 @@ fn duplicate_review_renders_in_both_themes() {
         Some(dark_review),
     );
 }
+
+#[test]
+fn organize_options_render_at_narrow_and_wide_sizes() {
+    render_at(
+        Vec2::new(720.0, 640.0),
+        egui::Theme::Light,
+        Page::Organize,
+        None,
+    );
+    render_at(
+        Vec2::new(1440.0, 900.0),
+        egui::Theme::Dark,
+        Page::Organize,
+        None,
+    );
+}

@@ -5,8 +5,16 @@ use std::{collections::HashSet, path::PathBuf, sync::mpsc::Receiver};
 use crate::{DuplicateGroups, FileActionSummary, RenameSummary, ScanProgress};
 
 pub(crate) enum WorkResult {
-    Sorted(Result<usize, String>),
-    Prefixed(Result<RenameSummary, String>),
+    Sorted {
+        directory: PathBuf,
+        open_when_finished: bool,
+        result: Result<usize, String>,
+    },
+    Prefixed {
+        directory: PathBuf,
+        open_when_finished: bool,
+        result: Result<RenameSummary, String>,
+    },
     Enhanced(Result<PathBuf, String>),
     Scanned(Result<(DuplicateGroups, Vec<PathBuf>), String>),
     Action(PendingAction, Result<FileActionSummary, String>),
@@ -168,6 +176,8 @@ pub(crate) struct MediaSiftApp {
     pub(crate) pending_sort: Option<PathBuf>,
     pub(crate) pending_date_prefix: Option<PathBuf>,
     pub(crate) use_oldest_date: bool,
+    pub(crate) open_sort_folder_when_finished: bool,
+    pub(crate) open_prefix_folder_when_finished: bool,
     pub(crate) scan_progress: Option<ScanProgress>,
     pub(crate) scan_report: String,
 }
@@ -191,6 +201,8 @@ impl MediaSiftApp {
             pending_sort: None,
             pending_date_prefix: None,
             use_oldest_date: false,
+            open_sort_folder_when_finished: false,
+            open_prefix_folder_when_finished: false,
             scan_progress: None,
             scan_report: String::new(),
         }
@@ -247,5 +259,12 @@ mod tests {
         review.keep_all();
         assert!(review.every_group_has_keeper());
         assert_eq!(review.action_count(), 0);
+    }
+
+    #[test]
+    fn organizer_folder_opening_is_opt_in() {
+        let app = MediaSiftApp::initial();
+        assert!(!app.open_sort_folder_when_finished);
+        assert!(!app.open_prefix_folder_when_finished);
     }
 }

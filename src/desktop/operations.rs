@@ -16,7 +16,47 @@ use crate::{
     unkept_duplicate_paths,
 };
 
-use super::state::{MediaSiftApp, NoticeKind, Operation, PendingAction, Review, WorkResult};
+use super::state::{
+    MediaSiftApp, Notice, NoticeKind, Operation, PendingAction, Review, WorkResult,
+};
+
+enum FolderOpenOutcome {
+    NotRequested,
+    Opened,
+    Failed(String),
+}
+
+fn organize_completion_notice(
+    kind: NoticeKind,
+    message: String,
+    directory: &Path,
+    outcome: FolderOpenOutcome,
+) -> Notice {
+    match outcome {
+        FolderOpenOutcome::NotRequested => Notice::new(kind, message),
+        FolderOpenOutcome::Opened => Notice::new(
+            kind,
+            format!("{message} Opened {} in File Explorer.", directory.display()),
+        ),
+        FolderOpenOutcome::Failed(error) => Notice::new(
+            NoticeKind::Warning,
+            format!(
+                "{message} The file operation completed, but MediaSift could not open {} in File Explorer: {error}. Open the folder manually to review the results.",
+                directory.display()
+            ),
+        ),
+    }
+}
+
+fn open_completed_folder(directory: &Path, requested: bool) -> FolderOpenOutcome {
+    if !requested {
+        return FolderOpenOutcome::NotRequested;
+    }
+    match open::that_detached(directory) {
+        Ok(()) => FolderOpenOutcome::Opened,
+        Err(error) => FolderOpenOutcome::Failed(error.to_string()),
+    }
+}
 
 impl MediaSiftApp {
     pub(crate) fn choose_sort_folder(&mut self) {
@@ -29,6 +69,7 @@ impl MediaSiftApp {
     }
 
     pub(crate) fn run_sort(&mut self, directory: PathBuf) {
+        let open_when_finished = self.open_sort_folder_when_finished;
         let (sender, receiver) = mpsc::channel();
         self.receiver = Some(receiver);
         self.operation = Some(Operation::Sort);
@@ -38,9 +79,12 @@ impl MediaSiftApp {
             format!("Organizing images below {}...", directory.display()),
         );
         std::thread::spawn(move || {
-            let _ = sender.send(WorkResult::Sorted(
-                sort_images(&directory).map_err(|error| error.to_string()),
-            ));
+            let result = sort_images(&directory).map_err(|error| error.to_string());
+            let _ = sender.send(WorkResult::Sorted {
+                directory,
+                open_when_finished,
+                result,
+            });
         });
     }
 
@@ -55,6 +99,7 @@ impl MediaSiftApp {
 
     pub(crate) fn run_date_prefix(&mut self, directory: PathBuf) {
         let use_oldest_date = self.use_oldest_date;
+        let open_when_finished = self.open_prefix_folder_when_finished;
         let (sender, receiver) = mpsc::channel();
         self.receiver = Some(receiver);
         self.operation = Some(Operation::Prefix);
@@ -64,10 +109,12 @@ impl MediaSiftApp {
             format!("Adding date prefixes below {}...", directory.display()),
         );
         std::thread::spawn(move || {
-            let _ = sender.send(WorkResult::Prefixed(prefix_media_files_with_date(
-                &directory,
-                use_oldest_date,
-            )));
+            let result = prefix_media_files_with_date(&directory, use_oldest_date);
+            let _ = sender.send(WorkResult::Prefixed {
+                directory,
+                open_when_finished,
+                result,
+            });
         });
     }
 
@@ -233,23 +280,33 @@ impl MediaSiftApp {
         for result in results {
             match result {
                 WorkResult::Progress(progress) => self.scan_progress = Some(progress),
-                WorkResult::Sorted(Ok(moved)) => {
+                WorkResult::Sorted {
+                    directory,
+                    open_when_finished,
+                    result: Ok(moved),
+                } => {
                     finished = true;
-                    self.set_notice(
+                    self.notice = organize_completion_notice(
                         NoticeKind::Success,
                         format!(
                             "Organized {moved} image(s) into Year/Month folders. Images without a usable capture date were left in place."
                         ),
+                        &directory,
+                        open_completed_folder(&directory, open_when_finished),
                     );
                 }
-                WorkResult::Prefixed(Ok(summary)) => {
+                WorkResult::Prefixed {
+                    directory,
+                    open_when_finished,
+                    result: Ok(summary),
+                } => {
                     finished = true;
                     let kind = if summary.failures.is_empty() {
                         NoticeKind::Success
                     } else {
                         NoticeKind::Warning
                     };
-                    self.set_notice(
+                    self.notice = organize_completion_notice(
                         kind,
                         format!(
                             "Renamed {} media file(s), skipped {}, and encountered {} failure(s).",
@@ -257,6 +314,8 @@ impl MediaSiftApp {
                             summary.skipped,
                             summary.failures.len()
                         ),
+                        &directory,
+                        open_completed_folder(&directory, open_when_finished),
                     );
                 }
                 WorkResult::Enhanced(Ok(output)) => {
@@ -321,8 +380,12 @@ impl MediaSiftApp {
                         ),
                     );
                 }
-                WorkResult::Sorted(Err(error))
-                | WorkResult::Prefixed(Err(error))
+                WorkResult::Sorted {
+                    result: Err(error), ..
+                }
+                | WorkResult::Prefixed {
+                    result: Err(error), ..
+                }
                 | WorkResult::Enhanced(Err(error))
                 | WorkResult::Scanned(Err(error))
                 | WorkResult::Action(_, Err(error)) => {
@@ -374,5 +437,36 @@ impl MediaSiftApp {
                 ),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn successful_completion_keeps_success_when_folder_opening_was_not_requested() {
+        let notice = organize_completion_notice(
+            NoticeKind::Success,
+            "Organized files.".to_owned(),
+            Path::new("C:/Media"),
+            FolderOpenOutcome::NotRequested,
+        );
+        assert_eq!(notice.kind, NoticeKind::Success);
+        assert_eq!(notice.text, "Organized files.");
+    }
+
+    #[test]
+    fn folder_open_failure_is_a_warning_without_hiding_operation_success() {
+        let notice = organize_completion_notice(
+            NoticeKind::Success,
+            "Organized files.".to_owned(),
+            Path::new("C:/Media"),
+            FolderOpenOutcome::Failed("launcher unavailable".to_owned()),
+        );
+        assert_eq!(notice.kind, NoticeKind::Warning);
+        assert!(notice.text.contains("The file operation completed"));
+        assert!(notice.text.contains("C:/Media"));
+        assert!(notice.text.contains("launcher unavailable"));
     }
 }
