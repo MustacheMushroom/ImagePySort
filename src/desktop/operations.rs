@@ -20,7 +20,7 @@ use crate::{
         CachedScanOutcome, ScanMode, find_exact_duplicates_with_cache_and_cancel,
         forget_cached_scan, load_cached_scan,
     },
-    sort_images,
+    sort_images, verify_duplicate_action_groups,
 };
 
 use super::state::{
@@ -124,10 +124,7 @@ impl MediaSiftApp {
         );
         std::thread::spawn(move || {
             let result = sort_images(&directory).map_err(|error| error.to_string());
-            let cache_error = result
-                .is_ok()
-                .then(|| forget_cached_scan().err().map(|error| error.to_string()))
-                .flatten();
+            let cache_error = forget_cached_scan().err().map(|error| error.to_string());
             let _ = sender.send(WorkResult::Sorted {
                 directory,
                 open_when_finished,
@@ -159,10 +156,7 @@ impl MediaSiftApp {
         );
         std::thread::spawn(move || {
             let result = prefix_media_files_with_date(&directory, use_oldest_date);
-            let cache_error = result
-                .is_ok()
-                .then(|| forget_cached_scan().err().map(|error| error.to_string()))
-                .flatten();
+            let cache_error = forget_cached_scan().err().map(|error| error.to_string());
             let _ = sender.send(WorkResult::Prefixed {
                 directory,
                 open_when_finished,
@@ -189,10 +183,7 @@ impl MediaSiftApp {
         );
         std::thread::spawn(move || {
             let result = enhance_photo(&photo);
-            let cache_error = result
-                .is_ok()
-                .then(|| forget_cached_scan().err().map(|error| error.to_string()))
-                .flatten();
+            let cache_error = forget_cached_scan().err().map(|error| error.to_string());
             let _ = sender.send(WorkResult::Enhanced {
                 result,
                 cache_error,
@@ -283,6 +274,7 @@ impl MediaSiftApp {
         self.operation = Some(Operation::Scan);
         self.scan_state = ScanState::Running;
         self.scan_mode = mode;
+        self.review_verified_this_session = false;
         self.scan_cancel_token = Some(Arc::clone(&cancel_token));
         self.set_notice(
             NoticeKind::Info,
@@ -373,6 +365,20 @@ impl MediaSiftApp {
         let Ok(paths) = self.selected_action_paths() else {
             return;
         };
+        let verifications = if matches!(action, PendingAction::Recycle | PendingAction::Delete) {
+            let Some(review) = self.review.as_ref() else {
+                return;
+            };
+            match review.action_verifications() {
+                Ok(verifications) => verifications,
+                Err(error) => {
+                    self.set_notice(NoticeKind::Error, error);
+                    return;
+                }
+            }
+        } else {
+            Vec::new()
+        };
         let archive = if action == PendingAction::Archive {
             FileDialog::new()
                 .set_title("Choose where to save the duplicate backup")
@@ -397,12 +403,23 @@ impl MediaSiftApp {
         self.pending_action = None;
         self.set_notice(
             NoticeKind::Info,
-            format!("Processing {} selected file(s)...", paths.len()),
+            if verifications.is_empty() {
+                format!("Processing {} selected file(s)...", paths.len())
+            } else {
+                format!(
+                    "Re-verifying exact contents, then processing {} selected file(s)...",
+                    paths.len()
+                )
+            },
         );
         std::thread::spawn(move || {
             let result = match action {
-                PendingAction::Recycle => Ok(recycle_files(&paths)),
-                PendingAction::Delete => Ok(permanently_delete_files(&paths)),
+                PendingAction::Recycle => verify_duplicate_action_groups(&verifications)
+                    .map(|()| recycle_files(&paths))
+                    .map_err(|error| error.to_string()),
+                PendingAction::Delete => verify_duplicate_action_groups(&verifications)
+                    .map(|()| permanently_delete_files(&paths))
+                    .map_err(|error| error.to_string()),
                 PendingAction::Archive => archive_files(
                     &paths,
                     &archive.expect("archive path selected"),
@@ -620,22 +637,39 @@ impl MediaSiftApp {
                     }
                 }
                 WorkResult::Sorted {
-                    result: Err(error), ..
+                    result: Err(error),
+                    cache_error,
+                    ..
                 }
                 | WorkResult::Prefixed {
-                    result: Err(error), ..
+                    result: Err(error),
+                    cache_error,
+                    ..
                 }
                 | WorkResult::Enhanced {
-                    result: Err(error), ..
-                }
-                | WorkResult::Action {
-                    result: Err(error), ..
+                    result: Err(error),
+                    cache_error,
                 } => {
                     finished = true;
                     self.set_notice(
                         NoticeKind::Error,
                         format!("{error} Try again or choose a different file or folder."),
                     );
+                    self.finish_cache_invalidation(cache_error);
+                }
+                WorkResult::Action {
+                    action,
+                    result: Err(error),
+                    cache_error,
+                } => {
+                    finished = true;
+                    self.set_notice(
+                        NoticeKind::Error,
+                        format!("{error} Try again or choose a different file or folder."),
+                    );
+                    if action != PendingAction::Archive {
+                        self.finish_cache_invalidation(cache_error);
+                    }
                 }
                 WorkResult::Scanned(Err(error)) => {
                     finished = true;

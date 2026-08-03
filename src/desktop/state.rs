@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    DuplicateGroups, FileActionSummary, RenameSummary, ScanProgress,
+    DuplicateActionVerification, DuplicateGroups, FileActionSummary, RenameSummary, ScanProgress,
     scan_cache::{CachedScan, ScanMode},
     selected_duplicate_paths,
 };
@@ -288,6 +288,38 @@ impl Review {
 
     pub(crate) fn selected_paths(&self) -> Result<Vec<PathBuf>, String> {
         selected_duplicate_paths(&self.groups, &self.selected_for_action)
+    }
+
+    pub(crate) fn action_verifications(&self) -> Result<Vec<DuplicateActionVerification>, String> {
+        if !self.every_group_has_keeper() {
+            return Err("Each duplicate group must retain at least one item.".to_owned());
+        }
+
+        let verifications = self
+            .groups
+            .iter()
+            .filter_map(|(expected_hash, paths)| {
+                let selected = paths
+                    .iter()
+                    .filter(|path| self.selected_for_action.contains(*path))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if selected.is_empty() {
+                    return None;
+                }
+                let keeper = paths
+                    .iter()
+                    .find(|path| !self.selected_for_action.contains(*path))
+                    .cloned()
+                    .expect("keeper count was validated");
+                Some(DuplicateActionVerification {
+                    expected_hash: expected_hash.clone(),
+                    keeper,
+                    selected,
+                })
+            })
+            .collect();
+        Ok(verifications)
     }
 
     pub(crate) fn page_count(&self, page_size: usize) -> usize {

@@ -13,10 +13,13 @@ use std::{
 };
 
 use directories::ProjectDirs;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Params, Statement, params};
 use walkdir::WalkDir;
 
-use crate::{DuplicateGroups, ScanProgress, absolute_path, file_hash_with_cancel, media_kind};
+use crate::{
+    DuplicateGroups, ScanProgress, absolute_path, file_hash_with_cancel, media_kind,
+    require_scan_roots,
+};
 
 const CACHE_FILE_NAME: &str = "scan-cache.sqlite3";
 const SCHEMA_VERSION: i64 = 1;
@@ -122,12 +125,7 @@ where
     F: FnMut(ScanProgress),
     C: FnMut() -> bool,
 {
-    if roots.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Select at least one scan location.",
-        ));
-    }
+    require_scan_roots(roots)?;
 
     let roots = roots
         .iter()
@@ -482,15 +480,7 @@ fn load_cached_scan_at(path: &Path) -> io::Result<Option<CachedScan>> {
         let mut statement = connection
             .prepare("SELECT path FROM scan_roots WHERE scan_id = ?1 ORDER BY ordinal")
             .map_err(sql_error)?;
-        statement
-            .query_map([scan_id], |row| row.get::<_, Vec<u8>>(0))
-            .map_err(sql_error)?
-            .map(|value| {
-                value
-                    .map_err(sql_error)
-                    .and_then(|blob| path_from_blob(&blob))
-            })
-            .collect::<io::Result<Vec<_>>>()?
+        query_paths(&mut statement, [scan_id])?
     };
     let groups = duplicate_groups(&connection, scan_id)?;
     Ok(Some(CachedScan {
@@ -499,6 +489,21 @@ fn load_cached_scan_at(path: &Path) -> io::Result<Option<CachedScan>> {
         progress,
         completed_at_unix_seconds: completed_at,
     }))
+}
+
+fn query_paths<P>(statement: &mut Statement<'_>, parameters: P) -> io::Result<Vec<PathBuf>>
+where
+    P: Params,
+{
+    statement
+        .query_map(parameters, |row| row.get::<_, Vec<u8>>(0))
+        .map_err(sql_error)?
+        .map(|value| {
+            value
+                .map_err(sql_error)
+                .and_then(|blob| path_from_blob(&blob))
+        })
+        .collect()
 }
 
 fn previous_hash(
@@ -605,15 +610,7 @@ fn duplicate_groups(connection: &Connection, scan_id: i64) -> io::Result<Duplica
         .prepare("SELECT path FROM files WHERE scan_id = ?1 AND hash = ?2 ORDER BY path")
         .map_err(sql_error)?;
     for hash in hashes {
-        let paths = statement
-            .query_map(params![scan_id, hash], |row| row.get::<_, Vec<u8>>(0))
-            .map_err(sql_error)?
-            .map(|value| {
-                value
-                    .map_err(sql_error)
-                    .and_then(|blob| path_from_blob(&blob))
-            })
-            .collect::<io::Result<Vec<_>>>()?;
+        let paths = query_paths(&mut statement, params![scan_id, hash])?;
         groups.insert(hash, paths);
     }
     Ok(groups)
@@ -730,7 +727,10 @@ fn path_from_blob(blob: &[u8]) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::{
+        fs::FileTimes,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -751,37 +751,30 @@ mod tests {
         }
     }
 
+    fn write_duplicate_pair(root: &Path) -> (PathBuf, PathBuf) {
+        let first = root.join("one.jpg");
+        let second = root.join("two.jpg");
+        fs::write(&first, b"0123456789abcdef").unwrap();
+        fs::write(&second, b"0123456789abcdef").unwrap();
+        (first, second)
+    }
+
+    fn run_completed_scan(cache: &Path, root: &Path, mode: ScanMode) -> CachedScan {
+        completed(scan_at(cache, &[root.to_path_buf()], mode, |_| {}, || false).unwrap())
+    }
+
     #[test]
     fn unchanged_files_reuse_saved_hashes() {
         let root = temp_dir();
         let cache = root.join("cache.sqlite3");
-        fs::write(root.join("one.jpg"), b"same media bytes").unwrap();
-        fs::write(root.join("two.jpg"), b"same media bytes").unwrap();
+        write_duplicate_pair(&root);
 
-        let first = completed(
-            scan_at(
-                &cache,
-                std::slice::from_ref(&root),
-                ScanMode::Incremental,
-                |_| {},
-                || false,
-            )
-            .unwrap(),
-        );
+        let first = run_completed_scan(&cache, &root, ScanMode::Incremental);
         assert_eq!(first.groups.len(), 1);
         assert_eq!(first.progress.files_hashed, 2);
         assert_eq!(first.progress.hashes_reused, 0);
 
-        let second = completed(
-            scan_at(
-                &cache,
-                std::slice::from_ref(&root),
-                ScanMode::Incremental,
-                |_| {},
-                || false,
-            )
-            .unwrap(),
-        );
+        let second = run_completed_scan(&cache, &root, ScanMode::Incremental);
         assert_eq!(second.groups, first.groups);
         assert_eq!(second.progress.files_hashed, 0);
         assert_eq!(second.progress.hashes_reused, 2);
@@ -793,35 +786,16 @@ mod tests {
     fn changed_and_new_files_refresh_only_needed_hashes() {
         let root = temp_dir();
         let cache = root.join("cache.sqlite3");
-        fs::write(root.join("one.jpg"), b"same media bytes").unwrap();
-        fs::write(root.join("two.jpg"), b"same media bytes").unwrap();
-        completed(
-            scan_at(
-                &cache,
-                std::slice::from_ref(&root),
-                ScanMode::Incremental,
-                |_| {},
-                || false,
-            )
-            .unwrap(),
-        );
+        write_duplicate_pair(&root);
+        run_completed_scan(&cache, &root, ScanMode::Incremental);
 
         fs::write(
             root.join("two.jpg"),
             b"different content with a deliberately unique length",
         )
         .unwrap();
-        fs::write(root.join("three.jpg"), b"same media bytes").unwrap();
-        let refreshed = completed(
-            scan_at(
-                &cache,
-                std::slice::from_ref(&root),
-                ScanMode::Incremental,
-                |_| {},
-                || false,
-            )
-            .unwrap(),
-        );
+        fs::write(root.join("three.jpg"), b"0123456789abcdef").unwrap();
+        let refreshed = run_completed_scan(&cache, &root, ScanMode::Incremental);
 
         assert_eq!(refreshed.groups.len(), 1);
         assert_eq!(refreshed.progress.files_hashed, 1);
@@ -841,18 +815,8 @@ mod tests {
     fn cancellation_preserves_last_completed_generation() {
         let root = temp_dir();
         let cache = root.join("cache.sqlite3");
-        fs::write(root.join("one.jpg"), b"same media bytes").unwrap();
-        fs::write(root.join("two.jpg"), b"same media bytes").unwrap();
-        let first = completed(
-            scan_at(
-                &cache,
-                std::slice::from_ref(&root),
-                ScanMode::Incremental,
-                |_| {},
-                || false,
-            )
-            .unwrap(),
-        );
+        write_duplicate_pair(&root);
+        let first = run_completed_scan(&cache, &root, ScanMode::Incremental);
 
         let cancelled = scan_at(
             &cache,
@@ -873,32 +837,43 @@ mod tests {
     fn full_rescan_ignores_saved_hashes() {
         let root = temp_dir();
         let cache = root.join("cache.sqlite3");
-        fs::write(root.join("one.jpg"), b"same media bytes").unwrap();
-        fs::write(root.join("two.jpg"), b"same media bytes").unwrap();
-        completed(
-            scan_at(
-                &cache,
-                std::slice::from_ref(&root),
-                ScanMode::Incremental,
-                |_| {},
-                || false,
-            )
-            .unwrap(),
-        );
+        write_duplicate_pair(&root);
+        run_completed_scan(&cache, &root, ScanMode::Incremental);
 
-        let full = completed(
-            scan_at(
-                &cache,
-                std::slice::from_ref(&root),
-                ScanMode::Full,
-                |_| {},
-                || false,
-            )
-            .unwrap(),
-        );
+        let full = run_completed_scan(&cache, &root, ScanMode::Full);
         assert_eq!(full.progress.files_hashed, 2);
         assert_eq!(full.progress.hashes_reused, 0);
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn destructive_verification_rejects_same_size_same_timestamp_replacement() {
+        let root = temp_dir();
+        let cache = root.join("cache.sqlite3");
+        let (keeper, selected) = write_duplicate_pair(&root);
+        let initial = run_completed_scan(&cache, &root, ScanMode::Incremental);
+        let expected_hash = initial.groups.keys().next().unwrap().clone();
+        let original_modified = fs::metadata(&selected).unwrap().modified().unwrap();
+
+        fs::write(&selected, b"fedcba9876543210").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&selected)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(original_modified))
+            .unwrap();
+        let refreshed = run_completed_scan(&cache, &root, ScanMode::Incremental);
+        assert_eq!(refreshed.progress.hashes_reused, 2);
+        assert_eq!(refreshed.groups, initial.groups);
+
+        let verification = crate::DuplicateActionVerification {
+            expected_hash,
+            keeper,
+            selected: vec![selected],
+        };
+        let error = crate::verify_duplicate_action_groups(&[verification]).unwrap_err();
+        assert!(error.to_string().contains("changed after the scan"));
         fs::remove_dir_all(root).unwrap();
     }
 

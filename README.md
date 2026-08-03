@@ -94,6 +94,10 @@ MediaSift does not run an always-on file watcher. A replacement cache generation
 becomes active only after a scan completes successfully. Cancelling a refresh or
 encountering an error keeps the prior completed generation. Successful organize,
 rename, enhancement, recycle, and delete operations invalidate the saved scan.
+Before a selected duplicate is recycled or permanently deleted, MediaSift also
+re-hashes it and one retained copy from its group. This final content check
+prevents cached timestamps from authorizing a destructive action after a file
+was replaced without an observable metadata change.
 Use **Forget saved scan...** to delete the cache manually without touching any
 media file.
 

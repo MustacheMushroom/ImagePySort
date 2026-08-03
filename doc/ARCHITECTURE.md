@@ -55,6 +55,10 @@ flowchart TD
   without a permanent file watcher. Incremental scans reuse hashes only when a
   path's metadata fingerprint matches. Full scans deliberately ignore saved
   hashes. Cached reviews are read-only until refreshed in the current session.
+- Metadata fingerprints are an optimization, not a destructive-action trust
+  boundary. Recycle and permanent-delete workflows re-hash every selected path
+  and one retained keeper per affected group immediately before applying the
+  action.
 - Cache schema, queries, path encoding, and generation lifecycle belong in
   `scan_cache.rs`. UI modules must not open the database directly.
 - Reusable visual patterns and semantic colors belong in `components.rs`, not in
