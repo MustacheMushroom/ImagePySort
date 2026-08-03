@@ -12,7 +12,7 @@ use eframe::egui::{
 };
 
 use super::state::{MediaSiftApp, Operation, Page, ScanState};
-use components::{ACCENT, ACCENT_HOVER, CONTENT_MAX_WIDTH, notice_color};
+use components::{ACCENT, ACCENT_HOVER, CONTENT_MAX_WIDTH, chrome_frame, notice_color};
 
 impl MediaSiftApp {
     fn handle_shortcuts(&mut self, context: &egui::Context) {
@@ -80,21 +80,7 @@ impl MediaSiftApp {
 
     fn top_bar(&mut self, context: &egui::Context, wide: bool) {
         egui::TopBottomPanel::top("app_header")
-            .frame(
-                Frame::new()
-                    .fill(context.style().visuals.panel_fill)
-                    .inner_margin(Margin::symmetric(20, 12))
-                    .stroke(Stroke::new(
-                        1.0_f32,
-                        context
-                            .style()
-                            .visuals
-                            .widgets
-                            .noninteractive
-                            .bg_stroke
-                            .color,
-                    )),
-            )
+            .frame(chrome_frame(context))
             .show(context, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
@@ -163,21 +149,7 @@ impl MediaSiftApp {
 
     fn status_bar(&mut self, context: &egui::Context) {
         egui::TopBottomPanel::bottom("status")
-            .frame(
-                Frame::new()
-                    .fill(context.style().visuals.panel_fill)
-                    .inner_margin(Margin::symmetric(20, 12))
-                    .stroke(Stroke::new(
-                        1.0_f32,
-                        context
-                            .style()
-                            .visuals
-                            .widgets
-                            .noninteractive
-                            .bg_stroke
-                            .color,
-                    )),
-            )
+            .frame(chrome_frame(context))
             .show(context, |ui| {
                 ui.horizontal(|ui| {
                     if let Some(operation) = self.operation {

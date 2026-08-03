@@ -22,18 +22,18 @@ flowchart TD
 
 ## Module responsibilities
 
-| Module | Responsibility |
-| --- | --- |
-| `src/main.rs` | Select the Windows GUI subsystem and call `desktop::run`. |
-| `src/desktop/app.rs` | Configure the native window and construct the application. |
-| `src/desktop/state.rs` | Own UI state, typed work results, notices, and pure duplicate-selection rules. |
-| `src/desktop/operations.rs` | Open native dialogs, start background work, collect typed results, and update state on the UI thread. |
-| `src/desktop/ui/mod.rs` | Render global navigation/status chrome, handle shortcuts, configure themes, and dispatch pages. |
-| `src/desktop/ui/pages/` | Render each user workflow in its own module without owning filesystem implementation. |
-| `src/desktop/ui/dialogs.rs` | Render confirmations for file-changing actions. |
-| `src/desktop/ui/components.rs` | Define semantic design tokens and reusable stateless widgets. |
-| `src/desktop/ui/tests.rs` | Exercise responsive page rendering in light and dark themes. |
-| `src/lib.rs` | Implement testable media discovery, hashing, sorting, renaming, enhancement, archive, recycle, and deletion behavior. |
+| Module                         | Responsibility                                                                                                        |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `src/main.rs`                  | Select the Windows GUI subsystem and call `desktop::run`.                                                             |
+| `src/desktop/app.rs`           | Configure the native window and construct the application.                                                            |
+| `src/desktop/state.rs`         | Own UI state, typed work results, notices, and pure duplicate-selection rules.                                        |
+| `src/desktop/operations.rs`    | Open native dialogs, start background work, collect typed results, and update state on the UI thread.                 |
+| `src/desktop/ui/mod.rs`        | Render global navigation/status chrome, handle shortcuts, configure themes, and dispatch pages.                       |
+| `src/desktop/ui/pages/`        | Render each user workflow in its own module without owning filesystem implementation.                                 |
+| `src/desktop/ui/dialogs.rs`    | Render confirmations for file-changing actions.                                                                       |
+| `src/desktop/ui/components.rs` | Define semantic design tokens and reusable stateless widgets.                                                         |
+| `src/desktop/ui/tests.rs`      | Exercise responsive page rendering in light and dark themes.                                                          |
+| `src/lib.rs`                   | Implement testable media discovery, hashing, sorting, renaming, enhancement, archive, recycle, and deletion behavior. |
 
 ## Dependency rules
 

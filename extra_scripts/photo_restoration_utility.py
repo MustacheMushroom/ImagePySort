@@ -10,15 +10,17 @@ Usage:
     python photo_restoration_utility.py --folder "path/to/photos_folder"
 """
 
-import os
-import sys
 import argparse
 from pathlib import Path
+
 from PIL import Image, ImageEnhance, ImageFilter
 
-MASTER_PROMPT = """Colorize and clean up the attached historical photograph with strict 100% preservation of all subjects' exact faces, expressions, and identities.
+MASTER_PROMPT = """Colorize and clean up the attached historical photograph with strict 100%
+preservation of all subjects' exact faces, expressions, and identities.
 
-STRICT CONSTRAINT: Do NOT alter, re-imagine, morph, or over-smooth any faces, eyes, smiles, noses, lips, or expressions. Keep all facial features 100% faithful to the original photograph.
+STRICT CONSTRAINT: Do NOT alter, re-imagine, morph, or over-smooth any faces,
+eyes, smiles, noses, lips, or expressions. Keep all facial features 100% faithful
+to the original photograph.
 
 Perform a conservative restoration:
 - Remove dust, scratches, cracks, fading, scanner glare, and yellowing/sepia tinting.
@@ -27,22 +29,25 @@ Perform a conservative restoration:
 - Maintain original lighting, shadows, and natural film grain character.
 """
 
-def enhance_local_photo(input_path: Path, output_path: Path = None):
+
+def enhance_local_photo(input_path: Path, output_path: Path | None = None) -> bool:
     """Applies high-quality local color balancing, contrast adjustment, and noise reduction."""
     if not input_path.exists():
         print(f"Error: Input file '{input_path}' does not exist.")
         return False
 
     if output_path is None:
-        output_path = input_path.parent / f"{input_path.stem} (Enhanced){input_path.suffix}"
+        output_path = (
+            input_path.parent / f"{input_path.stem} (Enhanced){input_path.suffix}"
+        )
 
     print(f"Processing: {input_path.name} ...")
 
     img = Image.open(input_path)
 
     # 1. Convert to RGB if needed
-    if img.mode != 'RGB':
-        img = img.convert('RGB')
+    if img.mode != "RGB":
+        img = img.convert("RGB")
 
     # 2. Slight noise cleanup (median filter for fine dust)
     cleaned = img.filter(ImageFilter.MedianFilter(size=3))
@@ -64,19 +69,26 @@ def enhance_local_photo(input_path: Path, output_path: Path = None):
     print(f"✅ Saved enhanced photo to: {output_path}")
     return True
 
-def print_ai_prompt(image_path: Path):
-    """Outputs the ready-to-use AI restoration prompt for a specific file."""
-    print("\n" + "="*60)
-    print(f"AI RESTORATION PROMPT FOR: {image_path.name}")
-    print("="*60)
-    print(MASTER_PROMPT)
-    print("="*60 + "\n")
 
-def main():
+def print_ai_prompt(image_path: Path) -> None:
+    """Outputs the ready-to-use AI restoration prompt for a specific file."""
+    print("\n" + "=" * 60)
+    print(f"AI RESTORATION PROMPT FOR: {image_path.name}")
+    print("=" * 60)
+    print(MASTER_PROMPT)
+    print("=" * 60 + "\n")
+
+
+def main() -> None:
+    """Process the requested images or print the restoration prompt."""
     parser = argparse.ArgumentParser(description="Historical Photo Restoration Utility")
     parser.add_argument("--input", "-i", type=str, help="Path to a single image file")
-    parser.add_argument("--folder", "-f", type=str, help="Path to a directory containing images")
-    parser.add_argument("--prompt-only", action="store_true", help="Print the master restoration prompt")
+    parser.add_argument(
+        "--folder", "-f", type=str, help="Path to a directory containing images"
+    )
+    parser.add_argument(
+        "--prompt-only", action="store_true", help="Print the master restoration prompt"
+    )
 
     args = parser.parse_args()
 
@@ -103,6 +115,7 @@ def main():
             if "(Restored)" in img.name or "(Enhanced)" in img.name:
                 continue
             enhance_local_photo(img)
+
 
 if __name__ == "__main__":
     main()

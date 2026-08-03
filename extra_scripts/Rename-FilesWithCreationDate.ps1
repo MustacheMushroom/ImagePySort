@@ -47,7 +47,7 @@ param (
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Write-Log {
+function Write-MediaSiftLog {
     param (
         [string]$Message,
         [string]$Level = "INFO",
@@ -55,11 +55,13 @@ function Write-Log {
     )
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $formattedMsg = "[$timestamp] [$Level] $Message"
-    Write-Host $formattedMsg
+    Write-Information $formattedMsg -InformationAction Continue
     if ($LogPath -and -not $global:WhatIfPreference) {
         try {
             [System.IO.File]::AppendAllText($LogPath, "$formattedMsg`r`n")
-        } catch {}
+        } catch {
+            Write-Warning "Could not append to log file '$LogPath': $_"
+        }
     }
 }
 
@@ -89,9 +91,9 @@ if (-not (Test-Path -Path $resolvedPath -PathType Container)) {
 
 $logFullPath = [System.IO.Path]::Combine($resolvedPath, $LogFile)
 
-Write-Log "Starting creation date rename scan in: $resolvedPath" -LogPath $logFullPath
+Write-MediaSiftLog "Starting creation date rename scan in: $resolvedPath" -LogPath $logFullPath
 if ($PSBoundParameters.ContainsKey('WhatIf')) {
-    Write-Log "RUNNING IN WHAT-IF (DRY RUN) MODE. No files will be renamed." -Level "WARN" -LogPath $logFullPath
+    Write-MediaSiftLog "RUNNING IN WHAT-IF (DRY RUN) MODE. No files will be renamed." -Level "WARN" -LogPath $logFullPath
 }
 
 # Regex pattern for files that ALREADY have yyyy-MM-dd - prefix
@@ -103,11 +105,9 @@ $allFiles = @(Get-ChildItem -Path $resolvedPath -File -Recurse:$Recurse.IsPresen
     $_.Name -notmatch $datePrefixRegex
 })
 
-Write-Log "Found $($allFiles.Count) candidate files to process." -LogPath $logFullPath
+Write-MediaSiftLog "Found $($allFiles.Count) candidate files to process." -LogPath $logFullPath
 
 $renamedCount = 0
-$skippedCount = 0
-
 foreach ($file in $allFiles) {
     # Determine date timestamp
     $targetDate = $file.CreationTime
@@ -122,9 +122,9 @@ foreach ($file in $allFiles) {
 
     if ($psCmdlet.ShouldProcess($file.FullName, "Rename to $([System.IO.Path]::GetFileName($targetPath))")) {
         Rename-Item -Path $file.FullName -NewName ([System.IO.Path]::GetFileName($targetPath))
-        Write-Log "Renamed: '$($file.Name)' -> '$([System.IO.Path]::GetFileName($targetPath))'" -LogPath $logFullPath
+        Write-MediaSiftLog "Renamed: '$($file.Name)' -> '$([System.IO.Path]::GetFileName($targetPath))'" -LogPath $logFullPath
         $renamedCount++
     }
 }
 
-Write-Log "Rename process completed. Renamed: $renamedCount file(s)." -LogPath $logFullPath
+Write-MediaSiftLog "Rename process completed. Renamed: $renamedCount file(s)." -LogPath $logFullPath

@@ -30,7 +30,7 @@
 
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [Parameter(Position = 0, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
+    [Parameter(Position = 0)]
     [ValidateScript({ Test-Path $_ -PathType Container })]
     [string]$Path = '.',
 
@@ -144,11 +144,11 @@ function Get-ZipDocumentExtension {
 $targetDir = (Resolve-Path $Path).Path
 $originalsPath = Join-Path $targetDir $OriginalsDirName
 
-Write-Host "Scanning directory: $targetDir" -ForegroundColor Cyan
+Write-Information "Scanning directory: $targetDir" -InformationAction Continue
 
 $zipFiles = Get-ChildItem -Path $targetDir -Filter *.zip -File
 if ($zipFiles.Count -eq 0) {
-    Write-Host "No .zip files found in $targetDir." -ForegroundColor Yellow
+    Write-Information "No .zip files found in $targetDir." -InformationAction Continue
     return
 }
 
@@ -159,7 +159,7 @@ foreach ($file in $zipFiles) {
     $detectedExt = Get-ZipDocumentExtension -ZipFilePath $file.FullName
 
     if ($null -eq $detectedExt) {
-        Write-Host "Skipping '$($file.Name)' (No OpenXML/ODF package structure detected)" -ForegroundColor Gray
+        Write-Information "Skipping '$($file.Name)' (No OpenXML/ODF package structure detected)" -InformationAction Continue
         $skippedCount++
         continue
     }
@@ -187,7 +187,7 @@ foreach ($file in $zipFiles) {
         continue
     }
 
-    Write-Host "Identified '$($file.Name)' -> '$targetFileName' ($detectedExt)" -ForegroundColor Green
+    Write-Information "Identified '$($file.Name)' -> '$targetFileName' ($detectedExt)" -InformationAction Continue
 
     if ($PSCmdlet.ShouldProcess($file.FullName, "Backup to '$archiveFilePath' and rename to '$targetFileName'")) {
         # Ensure originals directory exists
@@ -204,7 +204,7 @@ foreach ($file in $zipFiles) {
     }
 }
 
-Write-Host "`nSummary:" -ForegroundColor Cyan
-Write-Host "  Renamed: $renamedCount file(s)" -ForegroundColor Green
-Write-Host "  Skipped: $skippedCount file(s)" -ForegroundColor Yellow
-Write-Host "  Originals stored in: $originalsPath" -ForegroundColor Gray
+Write-Information "`nSummary:" -InformationAction Continue
+Write-Information "  Renamed: $renamedCount file(s)" -InformationAction Continue
+Write-Information "  Skipped: $skippedCount file(s)" -InformationAction Continue
+Write-Information "  Originals stored in: $originalsPath" -InformationAction Continue

@@ -22,24 +22,33 @@ fn sample_review() -> Review {
     }
 }
 
-fn render_at(size: Vec2, theme: egui::Theme, page: Page, review: Option<Review>) {
+fn test_context(theme: egui::Theme) -> egui::Context {
     let context = egui::Context::default();
     context.set_theme(theme);
     configure_style(&context);
-    let mut app = MediaSiftApp::initial();
-    app.page = page;
-    app.review = review;
-    if app.review.is_some() {
-        app.scan_state = ScanState::Complete;
-    }
-    app.scan_progress = Some(ScanProgress {
+    context
+}
+
+fn test_progress() -> ScanProgress {
+    ScanProgress {
         directories_visited: 12,
         files_visited: 240,
         media_files_found: 180,
         files_hashed: 80,
         duplicate_groups: 2,
         ..Default::default()
-    });
+    }
+}
+
+fn render_at(size: Vec2, theme: egui::Theme, page: Page, review: Option<Review>) {
+    let context = test_context(theme);
+    let mut app = MediaSiftApp::initial();
+    app.page = page;
+    app.review = review;
+    if app.review.is_some() {
+        app.scan_state = ScanState::Complete;
+    }
+    app.scan_progress = Some(test_progress());
     let output = context.run(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
@@ -58,9 +67,7 @@ fn render_at(size: Vec2, theme: egui::Theme, page: Page, review: Option<Review>)
 }
 
 fn render_active_scan(size: Vec2, theme: egui::Theme, scan_state: ScanState) {
-    let context = egui::Context::default();
-    context.set_theme(theme);
-    configure_style(&context);
+    let context = test_context(theme);
     let mut app = MediaSiftApp::initial();
     app.page = Page::Duplicates;
     app.scan_state = scan_state;
@@ -68,14 +75,7 @@ fn render_active_scan(size: Vec2, theme: egui::Theme, scan_state: ScanState) {
         PathBuf::from("D:/Photos"),
         PathBuf::from("E:/Family videos"),
     ];
-    app.scan_progress = Some(ScanProgress {
-        directories_visited: 12,
-        files_visited: 240,
-        media_files_found: 180,
-        files_hashed: 80,
-        duplicate_groups: 2,
-        ..Default::default()
-    });
+    app.scan_progress = Some(test_progress());
     let output = context.run(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),

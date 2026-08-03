@@ -74,7 +74,7 @@ param (
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Write-Log {
+function Write-MediaSiftLog {
     param (
         [string]$Message,
         [string]$Level = "INFO",
@@ -82,11 +82,13 @@ function Write-Log {
     )
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $formattedMsg = "[$timestamp] [$Level] $Message"
-    Write-Host $formattedMsg
+    Write-Information $formattedMsg -InformationAction Continue
     if ($LogPath -and -not $global:WhatIfPreference) {
         try {
             [System.IO.File]::AppendAllText($LogPath, "$formattedMsg`r`n")
-        } catch {}
+        } catch {
+            Write-Warning "Could not append to log file '$LogPath': $_"
+        }
     }
 }
 
@@ -174,14 +176,14 @@ $dupFullPath = [System.IO.Path]::Combine($resolvedPath, $DuplicatesDir)
 $leftFullPath = [System.IO.Path]::Combine($resolvedPath, $LeftoversDir)
 $logFullPath = [System.IO.Path]::Combine($resolvedPath, $LogFile)
 
-Write-Log "Starting duplicate scan in: $resolvedPath" -LogPath $logFullPath
-Write-Log "Originals directory: $origFullPath" -LogPath $logFullPath
-Write-Log "Duplicates directory: $dupFullPath" -LogPath $logFullPath
+Write-MediaSiftLog "Starting duplicate scan in: $resolvedPath" -LogPath $logFullPath
+Write-MediaSiftLog "Originals directory: $origFullPath" -LogPath $logFullPath
+Write-MediaSiftLog "Duplicates directory: $dupFullPath" -LogPath $logFullPath
 if ($MoveLeftovers.IsPresent) {
-    Write-Log "Leftovers directory: $leftFullPath" -LogPath $logFullPath
+    Write-MediaSiftLog "Leftovers directory: $leftFullPath" -LogPath $logFullPath
 }
 if ($PSBoundParameters.ContainsKey('WhatIf')) {
-    Write-Log "RUNNING IN WHAT-IF (DRY RUN) MODE. No files will be moved." -Level "WARN" -LogPath $logFullPath
+    Write-MediaSiftLog "RUNNING IN WHAT-IF (DRY RUN) MODE. No files will be moved." -Level "WARN" -LogPath $logFullPath
 }
 
 # Ensure destination folders exist if not WhatIf
@@ -205,14 +207,14 @@ $allFiles = Get-ChildItem -Path $resolvedPath -File -Recurse:$Recurse.IsPresent 
     $_.FullName -ne $logFullPath
 }
 
-Write-Log "Found $($allFiles.Count) candidate files to evaluate." -LogPath $logFullPath
+Write-MediaSiftLog "Found $($allFiles.Count) candidate files to evaluate." -LogPath $logFullPath
 
 # Stage 1: Group by File Size
 $sizeGroups = $allFiles | Group-Object -Property Length
 $candidateGroups = $sizeGroups | Where-Object { $_.Count -gt 1 }
 $uniqueSizeFiles = $sizeGroups | Where-Object { $_.Count -eq 1 }
 
-Write-Log "Found $($candidateGroups.Count) size groups containing potential duplicates." -LogPath $logFullPath
+Write-MediaSiftLog "Found $($candidateGroups.Count) size groups containing potential duplicates." -LogPath $logFullPath
 
 # Handle Unique files if requested
 if ($IncludeUnique.IsPresent -or $MoveLeftovers.IsPresent) {
@@ -222,7 +224,7 @@ if ($IncludeUnique.IsPresent -or $MoveLeftovers.IsPresent) {
         $targetPath = Get-DestinationPathForFile -BaseTargetFolder $targetDir -File $file -RootPath $resolvedPath -ShouldPreserveStructure $PreserveStructure.IsPresent
         if ($psCmdlet.ShouldProcess($file.FullName, "Move non-duplicate file to $targetPath")) {
             Move-Item -Path $file.FullName -Destination $targetPath
-            Write-Log "Moved non-duplicate file: '$($file.FullName)' -> '$targetPath'" -LogPath $logFullPath
+            Write-MediaSiftLog "Moved non-duplicate file: '$($file.FullName)' -> '$targetPath'" -LogPath $logFullPath
         }
     }
 }
@@ -240,7 +242,7 @@ foreach ($group in $candidateGroups) {
             }
         }
         catch {
-            Write-Log "Failed to calculate hash for '$($file.FullName)': $_" -Level "ERROR" -LogPath $logFullPath
+            Write-MediaSiftLog "Failed to calculate hash for '$($file.FullName)': $_" -Level "ERROR" -LogPath $logFullPath
             $null
         }
     }
@@ -257,7 +259,7 @@ foreach ($group in $candidateGroups) {
                     if (Compare-FilesByteByByte -Path1 $hGroup.Group[0].File.FullName -Path2 $hGroup.Group[$i].File.FullName) {
                         $verifiedGroup += $hGroup.Group[$i]
                     } else {
-                        Write-Log "Hash matched but byte comparison failed between '$($hGroup.Group[0].File.FullName)' and '$($hGroup.Group[$i].File.FullName)'" -Level "WARN" -LogPath $logFullPath
+                        Write-MediaSiftLog "Hash matched but byte comparison failed between '$($hGroup.Group[0].File.FullName)' and '$($hGroup.Group[$i].File.FullName)'" -Level "WARN" -LogPath $logFullPath
                     }
                 }
                 if ($verifiedGroup.Count -gt 1) {
@@ -272,13 +274,13 @@ foreach ($group in $candidateGroups) {
             $targetPath = Get-DestinationPathForFile -BaseTargetFolder $targetDir -File $file -RootPath $resolvedPath -ShouldPreserveStructure $PreserveStructure.IsPresent
             if ($psCmdlet.ShouldProcess($file.FullName, "Move non-duplicate file to $targetPath")) {
                 Move-Item -Path $file.FullName -Destination $targetPath
-                Write-Log "Moved non-duplicate file: '$($file.FullName)' -> '$targetPath'" -LogPath $logFullPath
+                Write-MediaSiftLog "Moved non-duplicate file: '$($file.FullName)' -> '$targetPath'" -LogPath $logFullPath
             }
         }
     }
 }
 
-Write-Log "Identified $($duplicateSets.Count) set(s) of binary identical files." -LogPath $logFullPath
+Write-MediaSiftLog "Identified $($duplicateSets.Count) set(s) of binary identical files." -LogPath $logFullPath
 
 # Process Duplicate Sets
 $groupCounter = 1
@@ -288,7 +290,7 @@ foreach ($set in $duplicateSets) {
     $groupFolderName = "Group_$("{0:D3}" -f $groupCounter)_$shortHash"
     $groupFolderPath = Join-Path -Path $dupFullPath -ChildPath $groupFolderName
 
-    Write-Log "Processing Duplicate Group $groupCounter (Hash: $shortHash, Count: $($set.Count))" -LogPath $logFullPath
+    Write-MediaSiftLog "Processing Duplicate Group $groupCounter (Hash: $shortHash, Count: $($set.Count))" -LogPath $logFullPath
 
     if (-not $WhatIfPreference) {
         if (-not (Test-Path -Path $groupFolderPath)) {
@@ -302,7 +304,7 @@ foreach ($set in $duplicateSets) {
 
     if ($psCmdlet.ShouldProcess($originalItem.FullName, "Move Original copy to $origDest")) {
         Move-Item -Path $originalItem.FullName -Destination $origDest
-        Write-Log "  [Original] Moved '$($originalItem.FullName)' -> '$origDest'" -LogPath $logFullPath
+        Write-MediaSiftLog "  [Original] Moved '$($originalItem.FullName)' -> '$origDest'" -LogPath $logFullPath
     }
 
     # Remaining files are moved to Duplicates group folder
@@ -312,11 +314,11 @@ foreach ($set in $duplicateSets) {
 
         if ($psCmdlet.ShouldProcess($dupItem.FullName, "Move Duplicate copy to $dupDest")) {
             Move-Item -Path $dupItem.FullName -Destination $dupDest
-            Write-Log "  [Duplicate] Moved '$($dupItem.FullName)' -> '$dupDest'" -LogPath $logFullPath
+            Write-MediaSiftLog "  [Duplicate] Moved '$($dupItem.FullName)' -> '$dupDest'" -LogPath $logFullPath
         }
     }
 
     $groupCounter++
 }
 
-Write-Log "Duplicate organization completed successfully." -LogPath $logFullPath
+Write-MediaSiftLog "Duplicate organization completed successfully." -LogPath $logFullPath

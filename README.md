@@ -37,17 +37,17 @@ The interface is organized into four workflows:
   Removable-drive and network-drive options apply to the automatic drive scope.
   Scans are read-only and cancellable; every match starts marked **Keep**, and
   file actions stay disabled until at least one copy in every group is protected.
-- **Organize** can sort photos into `Year/Month` folders
-  using EXIF `DateTimeOriginal` information.
-  It can also prefix media filenames with a `YYYY-MM-DD - ` filesystem-date
+- **Organize** can sort photos into `Year/Month` folders using EXIF
+  `DateTimeOriginal` information. It can also prefix media filenames with a
+  `YYYY-MM-DD` plus `-` filesystem-date
   prefix to known media files below a chosen folder. The app skips already
   prefixed files, prevents filename collisions, and asks for confirmation before
   either operation changes files. Each organizer can optionally open the
   selected result folder in File Explorer after a successful run.
-- **Photo tools** can create a separate ` (Enhanced)` PNG,
-  BMP, or TIFF sibling image using mild local dust/noise cleanup, contrast, and
-  color adjustments. It can also copy a conservative,
-  identity-preserving prompt for use with an external image service.
+- **Photo tools** can create a separate PNG, BMP, or TIFF sibling image with an
+  `(Enhanced)` filename suffix using mild local dust/noise cleanup, contrast,
+  and color adjustments. It can also copy a conservative, identity-preserving
+  prompt for use with an external image service.
 
 Use `Alt+1` through `Alt+4` to move between workflows. The Theme menu can follow
 Windows or explicitly use light or dark mode.

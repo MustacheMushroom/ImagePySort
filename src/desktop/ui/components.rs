@@ -11,6 +11,22 @@ pub(super) const ACCENT_HOVER: Color32 = Color32::from_rgb(29, 78, 216);
 const DANGER: Color32 = Color32::from_rgb(180, 35, 24);
 pub(super) const CONTENT_MAX_WIDTH: f32 = 1120.0;
 
+pub(super) fn chrome_frame(context: &egui::Context) -> Frame {
+    Frame::new()
+        .fill(context.style().visuals.panel_fill)
+        .inner_margin(Margin::symmetric(20, 12))
+        .stroke(Stroke::new(
+            1.0_f32,
+            context
+                .style()
+                .visuals
+                .widgets
+                .noninteractive
+                .bg_stroke
+                .color,
+        ))
+}
+
 pub(super) fn page_intro(ui: &mut egui::Ui, title: &str, description: &str) {
     ui.heading(RichText::new(title).size(30.0).strong());
     ui.add_space(2.0);
