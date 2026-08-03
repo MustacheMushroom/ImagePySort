@@ -1,0 +1,50 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install pinned packager
+        run: cargo install cargo-packager --version 0.11.8 --locked
+
+      - name: Run Rust tests
+        run: cargo test --locked
+
+      - name: Build NSIS installer
+        shell: pwsh
+        run: ./scripts/Build-WindowsInstaller.ps1
+
+      - name: Locate installer
+        id: installer
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path target -Recurse -File |
+            Where-Object { $_.Name -match '(?i)(setup|installer).*\.exe$' } |
+            Select-Object -First 1
+
+          if (-not $installer) {
+            throw "cargo-packager did not produce an NSIS installer below target/."
+          }
+
+          "path=$($installer.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "name=$($installer.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: MediaSift-Windows-installer
+          path: ${{ steps.installer.outputs.path }}
+          if-no-files-found: error

@@ -1,4 +1,6 @@
-//! Core file-system operations for MediaSift.
+//! Core file-system operations and native desktop application for MediaSift.
+
+pub mod desktop;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -8,7 +10,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use chrono::{DateTime, Local};
 use exif::{In, Reader, Tag, Value};
+use image::{ImageFormat, Rgb, RgbImage};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
@@ -54,6 +58,17 @@ pub struct FileActionSummary {
     pub failures: Vec<String>,
 }
 
+/// Result of adding date prefixes to media filenames.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameSummary {
+    pub renamed: usize,
+    pub skipped: usize,
+    pub failures: Vec<String>,
+}
+
+/// A conservative local-restoration prompt for use with an external image model.
+pub const RESTORATION_PROMPT: &str = "Colorize and clean up the attached historical photograph with strict 100% preservation of all subjects' exact faces, expressions, and identities.\n\nSTRICT CONSTRAINT: Do NOT alter, re-imagine, morph, or over-smooth any faces, eyes, smiles, noses, lips, or expressions. Keep all facial features 100% faithful to the original photograph.\n\nPerform a conservative restoration:\n- Remove dust, scratches, cracks, fading, scanner glare, and yellowing/sepia tinting.\n- Preserve 100% of original facial contours, eye shapes, nose, lips, hair, and clothing silhouettes.\n- Apply historically accurate, muted colorization with natural skin tones and era-appropriate clothing hues.\n- Maintain original lighting, shadows, and natural film grain character.";
+
 /// Duplicate paths grouped by their SHA-256 file-content hash.
 pub type DuplicateGroups = BTreeMap<String, Vec<PathBuf>>;
 
@@ -66,6 +81,13 @@ pub struct ScanProgress {
     pub media_files_found: usize,
     pub files_hashed: usize,
     pub duplicate_groups: usize,
+}
+
+/// Final state of a cancellable exact-duplicate scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DuplicateScanOutcome {
+    Completed(DuplicateGroups),
+    Cancelled,
 }
 
 /// Return the kind of a supported, known media file. Unknown extensions are excluded.
@@ -139,11 +161,22 @@ pub fn image_paths(directory: &Path) -> io::Result<Vec<PathBuf>> {
 
 /// Return the SHA-256 hash of a file's raw bytes.
 pub fn file_hash(path: &Path) -> io::Result<String> {
+    file_hash_with_cancel(path, &mut || false)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Interrupted, "File hashing was cancelled."))
+}
+
+fn file_hash_with_cancel<C>(path: &Path, should_cancel: &mut C) -> io::Result<Option<String>>
+where
+    C: FnMut() -> bool,
+{
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0; HASH_CHUNK_SIZE];
 
     loop {
+        if should_cancel() {
+            return Ok(None);
+        }
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -151,7 +184,7 @@ pub fn file_hash(path: &Path) -> io::Result<String> {
         hasher.update(&buffer[..read]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(Some(format!("{:x}", hasher.finalize())))
 }
 
 /// Find byte-for-byte duplicate images below `directory`.
@@ -171,10 +204,32 @@ pub fn find_exact_duplicates_in_roots(roots: &[PathBuf]) -> io::Result<Duplicate
 /// Find exact duplicate known media files while reporting scanner progress.
 pub fn find_exact_duplicates_with_progress<F>(
     roots: &[PathBuf],
-    mut report_progress: F,
+    report_progress: F,
 ) -> io::Result<DuplicateGroups>
 where
     F: FnMut(ScanProgress),
+{
+    match find_exact_duplicates_with_progress_and_cancel(roots, report_progress, || false)? {
+        DuplicateScanOutcome::Completed(groups) => Ok(groups),
+        DuplicateScanOutcome::Cancelled => Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Duplicate scan was cancelled.",
+        )),
+    }
+}
+
+/// Find exact duplicate media while reporting progress and polling for cancellation.
+///
+/// Cancellation is cooperative and checked between directory entries and every
+/// hash read chunk, so the caller can stop long scans without blocking the UI.
+pub fn find_exact_duplicates_with_progress_and_cancel<F, C>(
+    roots: &[PathBuf],
+    mut report_progress: F,
+    mut should_cancel: C,
+) -> io::Result<DuplicateScanOutcome>
+where
+    F: FnMut(ScanProgress),
+    C: FnMut() -> bool,
 {
     if roots.is_empty() {
         return Err(io::Error::new(
@@ -184,32 +239,46 @@ where
     }
     let mut progress = ScanProgress::default();
     let mut paths_by_size: HashMap<u64, Vec<PathBuf>> = HashMap::new();
+    let mut seen_media_paths = HashSet::new();
     for root in roots {
+        if should_cancel() {
+            report_progress(progress);
+            return Ok(DuplicateScanOutcome::Cancelled);
+        }
         if !root.is_dir() {
             continue;
         }
+        let root = absolute_path(root)?;
         progress.roots_started += 1;
         for entry in WalkDir::new(root)
             .follow_links(false)
             .sort_by_file_name()
             .into_iter()
-            .filter_map(Result::ok)
         {
-            if entry.file_type().is_dir() {
+            if should_cancel() {
+                report_progress(progress);
+                return Ok(DuplicateScanOutcome::Cancelled);
+            }
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let file_type = entry.file_type();
+            let path = entry.into_path();
+            if file_type.is_dir() {
                 progress.directories_visited += 1;
                 continue;
             }
-            if !entry.file_type().is_file() {
+            if !file_type.is_file() {
                 continue;
             }
             progress.files_visited += 1;
-            if media_kind(entry.path()).is_some() {
+            if media_kind(&path).is_some() {
+                if !seen_media_paths.insert(path.clone()) {
+                    continue;
+                }
                 progress.media_files_found += 1;
-                if let Ok(metadata) = fs::metadata(entry.path()) {
-                    paths_by_size
-                        .entry(metadata.len())
-                        .or_default()
-                        .push(entry.into_path());
+                if let Ok(metadata) = fs::metadata(&path) {
+                    paths_by_size.entry(metadata.len()).or_default().push(path);
                 }
             }
             if progress.files_visited % 250 == 0 {
@@ -222,8 +291,17 @@ where
     let mut paths_by_hash: DuplicateGroups = BTreeMap::new();
     for paths in paths_by_size.into_values().filter(|paths| paths.len() > 1) {
         for path in paths {
-            if let Ok(hash) = file_hash(&path) {
-                paths_by_hash.entry(hash).or_default().push(path);
+            if should_cancel() {
+                report_progress(progress);
+                return Ok(DuplicateScanOutcome::Cancelled);
+            }
+            match file_hash_with_cancel(&path, &mut should_cancel) {
+                Ok(Some(hash)) => paths_by_hash.entry(hash).or_default().push(path),
+                Ok(None) => {
+                    report_progress(progress);
+                    return Ok(DuplicateScanOutcome::Cancelled);
+                }
+                Err(_) => {}
             }
             progress.files_hashed += 1;
             if progress.files_hashed % 25 == 0 {
@@ -238,7 +316,7 @@ where
     paths_by_hash.retain(|_, paths| paths.len() > 1);
     progress.duplicate_groups = paths_by_hash.len();
     report_progress(progress);
-    Ok(paths_by_hash)
+    Ok(DuplicateScanOutcome::Completed(paths_by_hash))
 }
 
 /// Produce a plain-text summary suitable for copying or saving alongside a scan.
@@ -458,6 +536,88 @@ pub fn sort_images(directory: &Path) -> io::Result<usize> {
     Ok(moved)
 }
 
+/// Prefix supported media files recursively with their filesystem creation date.
+///
+/// Existing `yyyy-MM-dd - ` prefixes are preserved. If `use_oldest_date` is true,
+/// the earlier of the creation and last-modified timestamps is used, which is useful
+/// for recovered media whose creation timestamp was reset during restoration.
+pub fn prefix_media_files_with_date(
+    directory: &Path,
+    use_oldest_date: bool,
+) -> Result<RenameSummary, String> {
+    if !directory.is_dir() {
+        return Err(format!("Directory does not exist: {}", directory.display()));
+    }
+    let root = absolute_path(directory).map_err(|error| error.to_string())?;
+    let mut summary = RenameSummary {
+        renamed: 0,
+        skipped: 0,
+        failures: Vec::new(),
+    };
+    for source in media_paths(&[root]).map_err(|error| error.to_string())? {
+        let Some(file_name) = source.file_name().and_then(OsStr::to_str) else {
+            summary.skipped += 1;
+            continue;
+        };
+        if has_date_prefix(file_name) {
+            summary.skipped += 1;
+            continue;
+        }
+        let date = match filesystem_date(&source, use_oldest_date) {
+            Ok(date) => date,
+            Err(error) => {
+                summary
+                    .failures
+                    .push(format!("{}: {error}", source.display()));
+                continue;
+            }
+        };
+        let Some(parent) = source.parent() else {
+            summary
+                .failures
+                .push(format!("{}: no parent directory", source.display()));
+            continue;
+        };
+        let destination =
+            available_destination(parent, OsStr::new(&format!("{date} - {file_name}")));
+        match fs::rename(&source, destination) {
+            Ok(()) => summary.renamed += 1,
+            Err(error) => summary
+                .failures
+                .push(format!("{}: {error}", source.display())),
+        }
+    }
+    Ok(summary)
+}
+
+/// Apply a modest, local enhancement to a photograph and write a new sibling file.
+///
+/// The original is never changed. The default output name is `name (Enhanced).ext`;
+/// a numbered suffix is used if that file already exists.
+pub fn enhance_photo(input: &Path) -> Result<PathBuf, String> {
+    if !input.is_file() {
+        return Err(format!("Image does not exist: {}", input.display()));
+    }
+    let output = enhanced_destination(input)?;
+    let original = image::open(input)
+        .map_err(|error| error.to_string())?
+        .to_rgb8();
+    let cleaned = median_filter_3x3(&original);
+    let enhanced = conservative_enhancement(&original, &cleaned);
+    save_rgb_image(&enhanced, &output)?;
+    Ok(output)
+}
+
+/// Produce the restoration prompt with the selected filename as context.
+pub fn restoration_prompt(path: &Path) -> String {
+    format!(
+        "AI RESTORATION PROMPT FOR: {}\n\n{RESTORATION_PROMPT}",
+        path.file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("selected photo")
+    )
+}
+
 /// Make duplicate results readable in the GUI and command-line output.
 pub fn format_duplicate_report(duplicates: &DuplicateGroups) -> String {
     if duplicates.is_empty() {
@@ -485,6 +645,135 @@ fn is_image_path(path: &Path) -> bool {
                 .iter()
                 .any(|known| extension.eq_ignore_ascii_case(known))
         })
+}
+
+fn has_date_prefix(file_name: &str) -> bool {
+    let bytes = file_name.as_bytes();
+    bytes.len() >= 13
+        && bytes[..4].iter().all(u8::is_ascii_digit)
+        && bytes[4] == b'-'
+        && bytes[5..7].iter().all(u8::is_ascii_digit)
+        && bytes[7] == b'-'
+        && bytes[8..10].iter().all(u8::is_ascii_digit)
+        && bytes[10] == b' '
+        && bytes[11] == b'-'
+        && bytes[12] == b' '
+}
+
+fn filesystem_date(path: &Path, use_oldest_date: bool) -> io::Result<String> {
+    let metadata = fs::metadata(path)?;
+    let created = metadata.created().or_else(|_| metadata.modified())?;
+    let date = if use_oldest_date {
+        match metadata.modified() {
+            Ok(modified) if modified < created => modified,
+            _ => created,
+        }
+    } else {
+        created
+    };
+    let local: DateTime<Local> = date.into();
+    Ok(local.format("%Y-%m-%d").to_string())
+}
+
+fn enhanced_destination(input: &Path) -> Result<PathBuf, String> {
+    let parent = input
+        .parent()
+        .ok_or_else(|| format!("Image has no parent directory: {}", input.display()))?;
+    let stem = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| format!("Image has no valid filename: {}", input.display()))?;
+    let extension = input
+        .extension()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| format!("Image has no extension: {}", input.display()))?;
+    Ok(available_destination(
+        parent,
+        OsStr::new(&format!("{stem} (Enhanced).{extension}")),
+    ))
+}
+
+fn median_filter_3x3(input: &RgbImage) -> RgbImage {
+    let (width, height) = input.dimensions();
+    let mut output = RgbImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let mut channels = [[0_u8; 9]; 3];
+            let mut index = 0;
+            for sample_y in y.saturating_sub(1)..=(y + 1).min(height.saturating_sub(1)) {
+                for sample_x in x.saturating_sub(1)..=(x + 1).min(width.saturating_sub(1)) {
+                    let pixel = input.get_pixel(sample_x, sample_y);
+                    for channel in 0..3 {
+                        channels[channel][index] = pixel[channel];
+                    }
+                    index += 1;
+                }
+            }
+            for values in &mut channels {
+                values[..index].sort_unstable();
+            }
+            output.put_pixel(
+                x,
+                y,
+                Rgb([
+                    channels[0][index / 2],
+                    channels[1][index / 2],
+                    channels[2][index / 2],
+                ]),
+            );
+        }
+    }
+    output
+}
+
+fn conservative_enhancement(original: &RgbImage, cleaned: &RgbImage) -> RgbImage {
+    let (width, height) = original.dimensions();
+    let mut output = RgbImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let source = original.get_pixel(x, y);
+            let filtered = cleaned.get_pixel(x, y);
+            let mut pixel = [0_u8; 3];
+            for channel in 0..3 {
+                pixel[channel] =
+                    ((u16::from(source[channel]) * 3 + u16::from(filtered[channel])) / 4) as u8;
+            }
+            let luminance = 0.299 * f32::from(pixel[0])
+                + 0.587 * f32::from(pixel[1])
+                + 0.114 * f32::from(pixel[2]);
+            for value in &mut pixel {
+                let saturated = luminance + (f32::from(*value) - luminance) * 1.10;
+                *value = ((saturated - 128.0) * 1.15 + 128.0)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
+            output.put_pixel(x, y, Rgb(pixel));
+        }
+    }
+    output
+}
+
+fn save_rgb_image(image: &RgbImage, output: &Path) -> Result<(), String> {
+    let format = match output
+        .extension()
+        .and_then(OsStr::to_str)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => ImageFormat::Png,
+        Some("bmp") => ImageFormat::Bmp,
+        Some("tif" | "tiff") => ImageFormat::Tiff,
+        _ => {
+            return Err(format!(
+                "This build can enhance PNG, BMP, and TIFF images; unsupported output: {}",
+                output.display()
+            ));
+        }
+    };
+    let file = File::create(output).map_err(|error| error.to_string())?;
+    image
+        .write_to(&mut io::BufWriter::new(file), format)
+        .map_err(|error| error.to_string())
 }
 
 fn absolute_path(path: &Path) -> io::Result<PathBuf> {
@@ -655,6 +944,54 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_scan_can_be_cancelled_cooperatively() {
+        let root = temp_dir();
+        fs::write(root.join("first.jpg"), b"same image bytes").expect("write first image");
+        fs::write(root.join("second.jpg"), b"same image bytes").expect("write second image");
+        let mut cancellation_checks = 0;
+        let mut progress_updates = Vec::new();
+
+        let outcome = find_exact_duplicates_with_progress_and_cancel(
+            std::slice::from_ref(&root),
+            |progress| progress_updates.push(progress),
+            || {
+                cancellation_checks += 1;
+                cancellation_checks >= 3
+            },
+        )
+        .expect("cancel scan cleanly");
+
+        assert_eq!(outcome, DuplicateScanOutcome::Cancelled);
+        assert!(!progress_updates.is_empty());
+        fs::remove_dir_all(root).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn overlapping_scan_roots_do_not_count_the_same_file_twice() {
+        let root = temp_dir();
+        let nested = root.join("nested");
+        fs::create_dir(&nested).expect("create nested directory");
+        fs::write(root.join("first.jpg"), b"same image bytes").expect("write first image");
+        fs::write(nested.join("second.jpg"), b"same image bytes").expect("write second image");
+        let mut final_progress = ScanProgress::default();
+
+        let outcome = find_exact_duplicates_with_progress_and_cancel(
+            &[root.clone(), nested],
+            |progress| final_progress = progress,
+            || false,
+        )
+        .expect("scan overlapping roots");
+
+        let DuplicateScanOutcome::Completed(groups) = outcome else {
+            panic!("scan should complete");
+        };
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups.values().next().expect("duplicate group").len(), 2);
+        assert_eq!(final_progress.media_files_found, 2);
+        fs::remove_dir_all(root).expect("remove temporary directory");
+    }
+
+    #[test]
     fn parses_valid_exif_dates() {
         assert_eq!(parse_exif_date("2024:01:02 03:04:05"), Some((2024, "Jan")));
         assert_eq!(parse_exif_date("2024:13:02 03:04:05"), None);
@@ -717,5 +1054,56 @@ mod tests {
             unkept_duplicate_paths(&groups, &kept).unwrap(),
             vec![second]
         );
+    }
+
+    #[test]
+    fn identifies_existing_date_prefixes() {
+        assert!(has_date_prefix("2024-01-02 - photo.jpg"));
+        assert!(!has_date_prefix("2024-1-02 - photo.jpg"));
+        assert!(!has_date_prefix("holiday photo.jpg"));
+    }
+
+    #[test]
+    fn prefixes_known_media_files_without_touching_other_files() {
+        let root = temp_dir();
+        fs::write(root.join("photo.jpg"), b"jpeg bytes").unwrap();
+        fs::write(root.join("notes.txt"), b"notes").unwrap();
+
+        let summary = prefix_media_files_with_date(&root, false).unwrap();
+        assert_eq!(summary.renamed, 1);
+        assert_eq!(summary.failures, Vec::<String>::new());
+        assert!(root.join("notes.txt").is_file());
+        assert!(
+            fs::read_dir(&root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(" - photo.jpg"))
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn enhancement_creates_a_new_photo_without_replacing_source() {
+        let root = temp_dir();
+        let input = root.join("portrait.png");
+        RgbImage::from_pixel(3, 3, Rgb([120, 90, 70]))
+            .save(&input)
+            .unwrap();
+
+        let output = enhance_photo(&input).unwrap();
+        assert!(input.is_file());
+        assert!(output.is_file());
+        assert_ne!(input, output);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restoration_prompt_names_selected_photo() {
+        let prompt = restoration_prompt(Path::new("archive/grandmother.jpg"));
+        assert!(prompt.contains("grandmother.jpg"));
+        assert!(prompt.contains("Do NOT alter"));
     }
 }

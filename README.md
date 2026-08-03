@@ -3,7 +3,24 @@
 MediaSift is a Rust desktop utility for organizing images by capture date and
 reviewing exact duplicate image, video, and audio files.
 
-## Run
+## Install on Windows
+
+Run the Windows setup executable from a release artifact or build it locally
+with:
+
+```powershell
+cargo install cargo-packager --version 0.11.8 --locked
+.\scripts\Build-WindowsInstaller.ps1
+```
+
+The installer defaults to `C:\Program Files\MediaSift`, lets you choose a
+different destination, creates a searchable **MediaSift** Start Menu shortcut,
+and registers a standard uninstaller in Windows Installed apps. It does not add
+file associations, startup items, services, or application-settings registry
+keys. See [the Windows installer guide](doc/WINDOWS_INSTALLER.md) for packaging
+and registry details.
+
+## Run from source
 
 Install the [Rust toolchain](https://www.rust-lang.org/tools/install), then run:
 
@@ -11,24 +28,50 @@ Install the [Rust toolchain](https://www.rust-lang.org/tools/install), then run:
 cargo run --release
 ```
 
-Choose either:
+The interface is organized into four workflows:
 
-- **Select Directory to Sort** to organize photos into `Year/Month` folders
-  using EXIF `DateTimeOriginal` information.
-- **Scan for Exact Duplicates** to scan local fixed drives by default, then
-  optionally add removable drives, network drives, or custom folders. Only
-  supported media formats are hashed. Exact duplicates are identified by their
-  SHA-256 content hash; visually similar images or differently encoded copies
-  are not reported.
+- **Overview** explains what each workflow changes and links to the right tool.
+- **Duplicate finder** scans local fixed drives by default only when no folders
+  are selected. You can select several folders at once or add more folders in a
+  later pass; when the list is non-empty, only those folders are scanned.
+  Removable-drive and network-drive options apply to the automatic drive scope.
+  Scans are read-only and cancellable; every match starts marked **Keep**, and
+  file actions stay disabled until at least one copy in every group is protected.
+- **Organize** can sort photos into `Year/Month` folders using EXIF
+  `DateTimeOriginal` information. It can also prefix media filenames with a
+  `YYYY-MM-DD` plus `-` filesystem-date
+  prefix to known media files below a chosen folder. The app skips already
+  prefixed files, prevents filename collisions, and asks for confirmation before
+  either operation changes files. Each organizer can optionally open the
+  selected result folder in File Explorer after a successful run.
+- **Photo tools** can create a separate PNG, BMP, or TIFF sibling image with an
+  `(Enhanced)` filename suffix using mild local dust/noise cleanup, contrast,
+  and color adjustments. It can also copy a conservative, identity-preserving
+  prompt for use with an external image service.
+
+Use `Alt+1` through `Alt+4` to move between workflows. The Theme menu can follow
+Windows or explicitly use light or dark mode.
 
 During a scan, the interface shows live folder, file, media-file, hash, and
-duplicate-group counts. Once results are ready, keep selections can be changed
-individually or in bulk by source root. Unkept files can be sent to the Recycle
-Bin, permanently deleted, or archived in a ZIP file that records their
-original locations. The scan itself is read-only.
+duplicate-group counts plus a **Cancel scan** action. Cancellation is checked
+throughout directory traversal and file hashing, and never changes files. Once
+results are ready, Keep selections can be changed
+individually, by source root, or with a safe bulk choice. Unchecked files can be
+sent to the Recycle Bin, permanently deleted, or archived in a ZIP file that
+records their original locations. Confirmations show the exact number of files
+affected. After recycling or deleting files, the old review is cleared so it
+cannot accidentally be reused.
 
 The desktop interface runs scans and sorting in a background thread, so it
 remains responsive while it processes a large folder or drive.
+
+The native application is split into focused state, background-operation, page,
+dialog, and reusable-component modules. See
+[the architecture guide](doc/ARCHITECTURE.md) for module responsibilities and
+dependency rules.
+
+The original imported-script assessment and integration boundary are documented
+in [doc/UTILITY_SCRIPT_INVENTORY.md](doc/UTILITY_SCRIPT_INVENTORY.md).
 
 ## Development checks
 
