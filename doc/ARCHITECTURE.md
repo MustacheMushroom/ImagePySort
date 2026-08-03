@@ -16,6 +16,8 @@ flowchart TD
     dialogs --> components
     pages --> operations["desktop/operations.rs<br/>Background task orchestration"]
     dialogs --> operations
+    operations --> cache["scan_cache.rs<br/>Incremental SQLite scan index"]
+    cache --> core
     operations --> core["src/lib.rs<br/>Media and filesystem operations"]
     state --> core
 ```
@@ -33,6 +35,7 @@ flowchart TD
 | `src/desktop/ui/dialogs.rs`    | Render confirmations for file-changing actions.                                                                       |
 | `src/desktop/ui/components.rs` | Define semantic design tokens and reusable stateless widgets.                                                         |
 | `src/desktop/ui/tests.rs`      | Exercise responsive page rendering in light and dark themes.                                                          |
+| `src/scan_cache.rs`            | Persist scan generations in Local AppData, reuse unchanged hashes, and restore the last completed review.             |
 | `src/lib.rs`                   | Implement testable media discovery, hashing, sorting, renaming, enhancement, archive, recycle, and deletion behavior. |
 
 ## Dependency rules
@@ -43,6 +46,17 @@ flowchart TD
   typed `WorkResult` messages. Duplicate scans use a shared atomic cancellation
   token, poll it during traversal and chunked hashing, and report cancellation
   back to the UI as a distinct result rather than an error.
+- Incremental scans use SQLite as a disk-backed file index rather than retaining
+  every discovered path in the UI process. Each generation records normalized
+  paths, sizes, creation and modification timestamps, and SHA-256 hashes. The
+  last completed generation remains active until its replacement commits; a
+  cancelled, failed, or interrupted refresh cannot erase known-good results.
+- A metadata walk remains necessary to detect additions, changes, and removals
+  without a permanent file watcher. Incremental scans reuse hashes only when a
+  path's metadata fingerprint matches. Full scans deliberately ignore saved
+  hashes. Cached reviews are read-only until refreshed in the current session.
+- Cache schema, queries, path encoding, and generation lifecycle belong in
+  `scan_cache.rs`. UI modules must not open the database directly.
 - Reusable visual patterns and semantic colors belong in `components.rs`, not in
   individual workflow pages.
 - Cards and banners fill the width assigned by their responsive container.

@@ -17,7 +17,9 @@ pub(crate) fn run() -> eframe::Result<()> {
         options,
         Box::new(|creation_context| {
             configure_style(&creation_context.egui_ctx);
-            Ok(Box::new(MediaSiftApp::initial()))
+            let mut app = MediaSiftApp::initial();
+            app.load_saved_scan();
+            Ok(Box::new(app))
         }),
     )
 }

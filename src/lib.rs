@@ -1,6 +1,7 @@
 //! Core file-system operations and native desktop application for MediaSift.
 
 pub mod desktop;
+pub mod scan_cache;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -80,6 +81,8 @@ pub struct ScanProgress {
     pub files_visited: usize,
     pub media_files_found: usize,
     pub files_hashed: usize,
+    /// File hashes reused after their size and timestamps matched the saved scan.
+    pub hashes_reused: usize,
     pub duplicate_groups: usize,
 }
 
@@ -327,7 +330,7 @@ pub fn format_scan_report(
 ) -> String {
     let duplicate_files: usize = groups.values().map(Vec::len).sum();
     format!(
-        "Exact media scan report\n\nLocations:\n{}\n\nFolders visited: {}\nFiles visited: {}\nKnown media files: {}\nFiles hashed: {}\nDuplicate groups: {}\nDuplicate files: {}\nExtra copies: {}\n",
+        "Exact media scan report\n\nLocations:\n{}\n\nFolders visited: {}\nFiles visited: {}\nKnown media files: {}\nFiles hashed this scan: {}\nSaved hashes reused: {}\nDuplicate groups: {}\nDuplicate files: {}\nExtra copies: {}\n",
         roots
             .iter()
             .map(|path| format!("- {}", path.display()))
@@ -337,6 +340,7 @@ pub fn format_scan_report(
         progress.files_visited,
         progress.media_files_found,
         progress.files_hashed,
+        progress.hashes_reused,
         groups.len(),
         duplicate_files,
         duplicate_files.saturating_sub(groups.len())
