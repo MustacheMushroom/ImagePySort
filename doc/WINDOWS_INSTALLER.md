@@ -10,6 +10,11 @@ Windows' Installed apps list. It does not create file associations, shell
 extensions, startup entries, background services, or application-settings
 registry keys.
 
+The application mark is embedded directly in `media-sift.exe`, supplied to the
+live eframe window, and used for the setup executable. Its multi-resolution ICO
+includes exact Windows shell sizes so Start, search, the taskbar, Explorer, and
+Installed apps do not have to upscale a small bitmap.
+
 ## Build locally
 
 Install the pinned packaging tool once:
