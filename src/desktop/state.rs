@@ -12,7 +12,9 @@ use std::{
 };
 
 use crate::{
-    DuplicateGroups, FileActionSummary, RenameSummary, ScanProgress, selected_duplicate_paths,
+    DuplicateActionVerification, DuplicateGroups, FileActionSummary, RenameSummary, ScanProgress,
+    scan_cache::{CachedScan, ScanMode},
+    selected_duplicate_paths,
 };
 
 pub(crate) enum WorkResult {
@@ -20,16 +22,27 @@ pub(crate) enum WorkResult {
         directory: PathBuf,
         open_when_finished: bool,
         result: Result<usize, String>,
+        cache_error: Option<String>,
     },
     Prefixed {
         directory: PathBuf,
         open_when_finished: bool,
         result: Result<RenameSummary, String>,
+        cache_error: Option<String>,
     },
-    Enhanced(Result<PathBuf, String>),
-    Scanned(Result<(DuplicateGroups, Vec<PathBuf>), String>),
+    Enhanced {
+        result: Result<PathBuf, String>,
+        cache_error: Option<String>,
+    },
+    Scanned(Result<CachedScan, String>),
     ScanCancelled,
-    Action(PendingAction, Result<FileActionSummary, String>),
+    CachedScanLoaded(Result<Option<CachedScan>, String>),
+    CachedScanForgotten(Result<(), String>),
+    Action {
+        action: PendingAction,
+        result: Result<FileActionSummary, String>,
+        cache_error: Option<String>,
+    },
     Progress(ScanProgress),
 }
 
@@ -83,6 +96,8 @@ pub(crate) enum Operation {
     Prefix,
     Enhance,
     FileAction,
+    CacheLoad,
+    CacheForget,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -110,6 +125,8 @@ impl Operation {
             Self::Prefix => "Renaming media files",
             Self::Enhance => "Creating an enhanced copy",
             Self::FileAction => "Processing duplicate files",
+            Self::CacheLoad => "Loading saved scan",
+            Self::CacheForget => "Forgetting saved scan",
         }
     }
 }
@@ -273,6 +290,38 @@ impl Review {
         selected_duplicate_paths(&self.groups, &self.selected_for_action)
     }
 
+    pub(crate) fn action_verifications(&self) -> Result<Vec<DuplicateActionVerification>, String> {
+        if !self.every_group_has_keeper() {
+            return Err("Each duplicate group must retain at least one item.".to_owned());
+        }
+
+        let verifications = self
+            .groups
+            .iter()
+            .filter_map(|(expected_hash, paths)| {
+                let selected = paths
+                    .iter()
+                    .filter(|path| self.selected_for_action.contains(*path))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if selected.is_empty() {
+                    return None;
+                }
+                let keeper = paths
+                    .iter()
+                    .find(|path| !self.selected_for_action.contains(*path))
+                    .cloned()
+                    .expect("keeper count was validated");
+                Some(DuplicateActionVerification {
+                    expected_hash: expected_hash.clone(),
+                    keeper,
+                    selected,
+                })
+            })
+            .collect();
+        Ok(verifications)
+    }
+
     pub(crate) fn page_count(&self, page_size: usize) -> usize {
         assert!(page_size > 0, "page size must be greater than zero");
         self.groups.len().div_ceil(page_size)
@@ -330,6 +379,11 @@ pub(crate) struct MediaSiftApp {
     pub(crate) open_prefix_folder_when_finished: bool,
     pub(crate) scan_progress: Option<ScanProgress>,
     pub(crate) scan_report: String,
+    pub(crate) scan_mode: ScanMode,
+    pub(crate) saved_scan_at: Option<i64>,
+    pub(crate) review_verified_this_session: bool,
+    pub(crate) pending_forget_scan_cache: bool,
+    pub(crate) saved_scan_error: bool,
 }
 
 impl MediaSiftApp {
@@ -358,6 +412,11 @@ impl MediaSiftApp {
             open_prefix_folder_when_finished: false,
             scan_progress: None,
             scan_report: String::new(),
+            scan_mode: ScanMode::Incremental,
+            saved_scan_at: None,
+            review_verified_this_session: false,
+            pending_forget_scan_cache: false,
+            saved_scan_error: false,
         }
     }
 

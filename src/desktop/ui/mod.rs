@@ -31,6 +31,7 @@ impl MediaSiftApp {
             self.pending_action = None;
             self.pending_sort = None;
             self.pending_date_prefix = None;
+            self.pending_forget_scan_cache = false;
         }
     }
 

@@ -53,7 +53,9 @@ Use `Alt+1` through `Alt+4` to move between workflows. The Theme menu can follow
 Windows or explicitly use light or dark mode.
 
 During a scan, the interface shows live folder, file, media-file, hash, and
-duplicate-group counts plus a **Cancel scan** action. Cancellation is checked
+duplicate-group counts plus a **Cancel scan** action. It also distinguishes
+hashes read during the current scan from unchanged hashes reused from the last
+scan. Cancellation is checked
 throughout directory traversal and file hashing, and never changes files. Once
 results are ready, groups are paginated in batches of 50 so even very large
 reviews remain responsive. Wide windows use two-column workflow and result
@@ -71,6 +73,33 @@ cannot accidentally be reused.
 The desktop interface runs scans and sorting in a background thread. Completed
 duplicate reviews cache their summary counts and render a bounded page rather
 than rebuilding every result row on each frame.
+
+## Saved and incremental scans
+
+The last successful duplicate scan is stored locally in
+`%LOCALAPPDATA%\MustacheMushroom\MediaSift\data\scan-cache.sqlite3`. The SQLite
+cache contains scanned paths, file sizes and timestamps, SHA-256 hashes, scan
+roots, and duplicate results; it never contains media-file contents and is not
+sent anywhere.
+
+On the next launch, MediaSift opens the saved review without rereading the media
+files. Because files may have changed while the app was closed, restored results
+are clearly marked unverified and all file actions remain disabled until you
+choose **Refresh saved locations**. A refresh still walks the selected directory
+trees to find additions, changes, and removals, but it reuses hashes for files
+whose path, size, creation time, and modification time are unchanged. Choose
+**Full rescan** when you want to ignore every saved hash.
+
+MediaSift does not run an always-on file watcher. A replacement cache generation
+becomes active only after a scan completes successfully. Cancelling a refresh or
+encountering an error keeps the prior completed generation. Successful organize,
+rename, enhancement, recycle, and delete operations invalidate the saved scan.
+Before a selected duplicate is recycled or permanently deleted, MediaSift also
+re-hashes it and one retained copy from its group. This final content check
+prevents cached timestamps from authorizing a destructive action after a file
+was replaced without an observable metadata change.
+Use **Forget saved scan...** to delete the cache manually without touching any
+media file.
 
 The native application is split into focused state, background-operation, page,
 dialog, and reusable-component modules. See

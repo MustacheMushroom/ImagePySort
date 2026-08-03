@@ -216,3 +216,21 @@ fn multi_folder_scan_and_cancellation_states_render_responsively() {
         ScanState::Cancelling,
     );
 }
+
+#[test]
+fn restored_scan_warning_and_controls_render_responsively() {
+    for (size, theme) in [
+        (Vec2::new(720.0, 700.0), egui::Theme::Light),
+        (Vec2::new(1440.0, 900.0), egui::Theme::Dark),
+    ] {
+        let context = test_context(theme);
+        let mut app = MediaSiftApp::initial();
+        app.page = Page::Duplicates;
+        app.review = Some(Review::sample_for_tests());
+        app.scan_state = ScanState::Complete;
+        app.scan_progress = Some(test_progress());
+        app.saved_scan_at = Some(1_700_000_000);
+        app.review_verified_this_session = false;
+        render_frame(&context, size, |ui| app.duplicates_ui(ui));
+    }
+}

@@ -1,6 +1,7 @@
 //! Core file-system operations and native desktop application for MediaSift.
 
 pub mod desktop;
+pub mod scan_cache;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -72,6 +73,15 @@ pub const RESTORATION_PROMPT: &str = "Colorize and clean up the attached histori
 /// Duplicate paths grouped by their SHA-256 file-content hash.
 pub type DuplicateGroups = BTreeMap<String, Vec<PathBuf>>;
 
+/// Files from one duplicate group that must still match immediately before a
+/// destructive action is allowed to run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DuplicateActionVerification {
+    pub expected_hash: String,
+    pub keeper: PathBuf,
+    pub selected: Vec<PathBuf>,
+}
+
 /// Live, monotonic counters emitted while a media scan is running.
 #[derive(Debug, Clone, Default)]
 pub struct ScanProgress {
@@ -80,6 +90,8 @@ pub struct ScanProgress {
     pub files_visited: usize,
     pub media_files_found: usize,
     pub files_hashed: usize,
+    /// File hashes reused after their size and timestamps matched the saved scan.
+    pub hashes_reused: usize,
     pub duplicate_groups: usize,
 }
 
@@ -165,6 +177,34 @@ pub fn file_hash(path: &Path) -> io::Result<String> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::Interrupted, "File hashing was cancelled."))
 }
 
+/// Re-hash selected duplicates and one retained copy from every affected group.
+///
+/// Cached size and timestamp metadata make refreshes fast, but are not a safe
+/// authorization boundary for deletion. Call this immediately before moving or
+/// deleting files so a same-size replacement cannot be treated as a duplicate.
+pub fn verify_duplicate_action_groups(groups: &[DuplicateActionVerification]) -> io::Result<()> {
+    for group in groups {
+        for path in std::iter::once(&group.keeper).chain(&group.selected) {
+            let actual_hash = file_hash(path).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "Could not verify {} before changing files: {error}. Refresh the scan and review the group again.",
+                        path.display()
+                    ),
+                )
+            })?;
+            if actual_hash != group.expected_hash {
+                return Err(io::Error::other(format!(
+                    "{} changed after the scan and is no longer an exact duplicate. Refresh the scan and review the group again.",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn file_hash_with_cancel<C>(path: &Path, should_cancel: &mut C) -> io::Result<Option<String>>
 where
     C: FnMut() -> bool,
@@ -231,12 +271,7 @@ where
     F: FnMut(ScanProgress),
     C: FnMut() -> bool,
 {
-    if roots.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Select at least one scan location.",
-        ));
-    }
+    require_scan_roots(roots)?;
     let mut progress = ScanProgress::default();
     let mut paths_by_size: HashMap<u64, Vec<PathBuf>> = HashMap::new();
     let mut seen_media_paths = HashSet::new();
@@ -319,6 +354,17 @@ where
     Ok(DuplicateScanOutcome::Completed(paths_by_hash))
 }
 
+pub(crate) fn require_scan_roots(roots: &[PathBuf]) -> io::Result<()> {
+    if roots.is_empty() {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Select at least one scan location.",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Produce a plain-text summary suitable for copying or saving alongside a scan.
 pub fn format_scan_report(
     roots: &[PathBuf],
@@ -327,7 +373,7 @@ pub fn format_scan_report(
 ) -> String {
     let duplicate_files: usize = groups.values().map(Vec::len).sum();
     format!(
-        "Exact media scan report\n\nLocations:\n{}\n\nFolders visited: {}\nFiles visited: {}\nKnown media files: {}\nFiles hashed: {}\nDuplicate groups: {}\nDuplicate files: {}\nExtra copies: {}\n",
+        "Exact media scan report\n\nLocations:\n{}\n\nFolders visited: {}\nFiles visited: {}\nKnown media files: {}\nFiles hashed this scan: {}\nSaved hashes reused: {}\nDuplicate groups: {}\nDuplicate files: {}\nExtra copies: {}\n",
         roots
             .iter()
             .map(|path| format!("- {}", path.display()))
@@ -337,6 +383,7 @@ pub fn format_scan_report(
         progress.files_visited,
         progress.media_files_found,
         progress.files_hashed,
+        progress.hashes_reused,
         groups.len(),
         duplicate_files,
         duplicate_files.saturating_sub(groups.len())
@@ -935,6 +982,33 @@ mod tests {
         fs::remove_dir_all(root).expect("remove temporary directory");
     }
 
+    fn two_path_duplicate_group() -> (DuplicateGroups, PathBuf, PathBuf) {
+        let first = PathBuf::from("one.jpg");
+        let second = PathBuf::from("two.jpg");
+        let groups =
+            DuplicateGroups::from([("hash".to_owned(), vec![first.clone(), second.clone()])]);
+        (groups, first, second)
+    }
+
+    #[test]
+    fn destructive_verification_detects_same_size_content_changes() {
+        let root = temp_dir();
+        let keeper = root.join("keeper.jpg");
+        let selected = root.join("selected.jpg");
+        fs::write(&keeper, b"0123456789abcdef").unwrap();
+        fs::write(&selected, b"0123456789abcdef").unwrap();
+        let verification = DuplicateActionVerification {
+            expected_hash: file_hash(&keeper).unwrap(),
+            keeper,
+            selected: vec![selected.clone()],
+        };
+
+        verify_duplicate_action_groups(std::slice::from_ref(&verification)).unwrap();
+        fs::write(selected, b"fedcba9876543210").unwrap();
+        assert!(verify_duplicate_action_groups(&[verification]).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn finds_exact_duplicates_recursively() {
         let root = temp_dir();
@@ -1065,10 +1139,7 @@ mod tests {
 
     #[test]
     fn unkept_paths_require_a_keeper_in_every_group() {
-        let first = PathBuf::from("one.jpg");
-        let second = PathBuf::from("two.jpg");
-        let mut groups = DuplicateGroups::new();
-        groups.insert("hash".to_owned(), vec![first.clone(), second.clone()]);
+        let (groups, first, second) = two_path_duplicate_group();
         assert!(unkept_duplicate_paths(&groups, &HashSet::new()).is_err());
         let kept = HashSet::from([first]);
         assert_eq!(
@@ -1079,10 +1150,7 @@ mod tests {
 
     #[test]
     fn selected_paths_are_sparse_and_require_a_keeper_in_every_group() {
-        let first = PathBuf::from("one.jpg");
-        let second = PathBuf::from("two.jpg");
-        let mut groups = DuplicateGroups::new();
-        groups.insert("hash".to_owned(), vec![first.clone(), second.clone()]);
+        let (groups, first, second) = two_path_duplicate_group();
 
         assert_eq!(
             selected_duplicate_paths(&groups, &HashSet::new()).unwrap(),

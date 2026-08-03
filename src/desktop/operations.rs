@@ -13,10 +13,14 @@ use eframe::egui;
 use rfd::FileDialog;
 
 use crate::{
-    ArchiveCompression, DuplicateScanOutcome, ScanProgress, archive_files, computer_scan_roots,
-    enhance_photo, find_exact_duplicates_with_progress_and_cancel, format_scan_report,
-    permanently_delete_files, prefix_media_files_with_date, recycle_files, restoration_prompt,
-    sort_images,
+    ArchiveCompression, ScanProgress, archive_files, computer_scan_roots, enhance_photo,
+    format_scan_report, permanently_delete_files, prefix_media_files_with_date, recycle_files,
+    restoration_prompt,
+    scan_cache::{
+        CachedScanOutcome, ScanMode, find_exact_duplicates_with_cache_and_cancel,
+        forget_cached_scan, load_cached_scan,
+    },
+    sort_images, verify_duplicate_action_groups,
 };
 
 use super::state::{
@@ -85,6 +89,20 @@ fn resolved_scan_roots(
 }
 
 impl MediaSiftApp {
+    pub(crate) fn load_saved_scan(&mut self) {
+        let (sender, receiver) = mpsc::channel();
+        self.receiver = Some(receiver);
+        self.operation = Some(Operation::CacheLoad);
+        self.set_notice(
+            NoticeKind::Info,
+            "Loading the last saved duplicate scan from Local AppData...",
+        );
+        std::thread::spawn(move || {
+            let result = load_cached_scan().map_err(|error| error.to_string());
+            let _ = sender.send(WorkResult::CachedScanLoaded(result));
+        });
+    }
+
     pub(crate) fn choose_sort_folder(&mut self) {
         if let Some(directory) = FileDialog::new()
             .set_title("Choose the folder whose images you want to organize")
@@ -106,10 +124,12 @@ impl MediaSiftApp {
         );
         std::thread::spawn(move || {
             let result = sort_images(&directory).map_err(|error| error.to_string());
+            let cache_error = forget_cached_scan().err().map(|error| error.to_string());
             let _ = sender.send(WorkResult::Sorted {
                 directory,
                 open_when_finished,
                 result,
+                cache_error,
             });
         });
     }
@@ -136,10 +156,12 @@ impl MediaSiftApp {
         );
         std::thread::spawn(move || {
             let result = prefix_media_files_with_date(&directory, use_oldest_date);
+            let cache_error = forget_cached_scan().err().map(|error| error.to_string());
             let _ = sender.send(WorkResult::Prefixed {
                 directory,
                 open_when_finished,
                 result,
+                cache_error,
             });
         });
     }
@@ -160,7 +182,12 @@ impl MediaSiftApp {
             format!("Creating an enhanced copy of {}...", photo.display()),
         );
         std::thread::spawn(move || {
-            let _ = sender.send(WorkResult::Enhanced(enhance_photo(&photo)));
+            let result = enhance_photo(&photo);
+            let cache_error = forget_cached_scan().err().map(|error| error.to_string());
+            let _ = sender.send(WorkResult::Enhanced {
+                result,
+                cache_error,
+            });
         });
     }
 
@@ -203,10 +230,37 @@ impl MediaSiftApp {
     }
 
     pub(crate) fn start_media_scan(&mut self) {
+        self.start_media_scan_with_mode(ScanMode::Incremental);
+    }
+
+    pub(crate) fn start_full_media_scan(&mut self) {
+        self.start_media_scan_with_mode(ScanMode::Full);
+    }
+
+    pub(crate) fn refresh_saved_scan(&mut self, mode: ScanMode) {
+        let Some(review) = &self.review else {
+            self.set_notice(NoticeKind::Error, "There is no saved scan to refresh.");
+            return;
+        };
+        self.start_media_scan_for_roots(review.roots().to_vec(), mode);
+    }
+
+    fn start_media_scan_with_mode(&mut self, mode: ScanMode) {
         let roots = resolved_scan_roots(
             &self.selected_scan_roots,
             computer_scan_roots(self.include_removable, self.include_network),
         );
+        self.start_media_scan_for_roots(roots, mode);
+    }
+
+    fn start_media_scan_for_roots(&mut self, roots: Vec<PathBuf>, mode: ScanMode) {
+        if self.saved_scan_error {
+            self.set_notice(
+                NoticeKind::Error,
+                "Delete the unreadable saved-scan cache before starting a new scan.",
+            );
+            return;
+        }
         if roots.is_empty() {
             self.set_notice(
                 NoticeKind::Error,
@@ -219,38 +273,61 @@ impl MediaSiftApp {
         self.receiver = Some(receiver);
         self.operation = Some(Operation::Scan);
         self.scan_state = ScanState::Running;
+        self.scan_mode = mode;
+        self.review_verified_this_session = false;
         self.scan_cancel_token = Some(Arc::clone(&cancel_token));
         self.set_notice(
             NoticeKind::Info,
             format!(
-                "Scanning {} location(s). The scan is read-only and safe to leave running.",
-                roots.len()
+                "{} {} location(s). The scan is read-only and safe to leave running.",
+                if mode == ScanMode::Incremental {
+                    "Refreshing"
+                } else {
+                    "Fully rescanning"
+                },
+                roots.len(),
             ),
         );
-        self.review = None;
-        self.review_page = 0;
         self.scan_progress = Some(ScanProgress::default());
-        self.scan_report.clear();
+        if self.review.is_none() {
+            self.scan_report.clear();
+        }
         std::thread::spawn(move || {
             let progress_sender = sender.clone();
-            let result = find_exact_duplicates_with_progress_and_cancel(
+            let result = find_exact_duplicates_with_cache_and_cancel(
                 &roots,
+                mode,
                 move |progress| {
                     let _ = progress_sender.send(WorkResult::Progress(progress));
                 },
                 || cancel_token.load(Ordering::Relaxed),
             );
             match result {
-                Ok(DuplicateScanOutcome::Completed(groups)) => {
-                    let _ = sender.send(WorkResult::Scanned(Ok((groups, roots))));
+                Ok(CachedScanOutcome::Completed(scan)) => {
+                    let _ = sender.send(WorkResult::Scanned(Ok(scan)));
                 }
-                Ok(DuplicateScanOutcome::Cancelled) => {
+                Ok(CachedScanOutcome::Cancelled) => {
                     let _ = sender.send(WorkResult::ScanCancelled);
                 }
                 Err(error) => {
                     let _ = sender.send(WorkResult::Scanned(Err(error.to_string())));
                 }
             }
+        });
+    }
+
+    pub(crate) fn forget_saved_scan(&mut self) {
+        let (sender, receiver) = mpsc::channel();
+        self.receiver = Some(receiver);
+        self.operation = Some(Operation::CacheForget);
+        self.pending_forget_scan_cache = false;
+        self.set_notice(
+            NoticeKind::Info,
+            "Deleting saved scan metadata from Local AppData. Media files will not be touched...",
+        );
+        std::thread::spawn(move || {
+            let result = forget_cached_scan().map_err(|error| error.to_string());
+            let _ = sender.send(WorkResult::CachedScanForgotten(result));
         });
     }
 
@@ -288,6 +365,20 @@ impl MediaSiftApp {
         let Ok(paths) = self.selected_action_paths() else {
             return;
         };
+        let verifications = if matches!(action, PendingAction::Recycle | PendingAction::Delete) {
+            let Some(review) = self.review.as_ref() else {
+                return;
+            };
+            match review.action_verifications() {
+                Ok(verifications) => verifications,
+                Err(error) => {
+                    self.set_notice(NoticeKind::Error, error);
+                    return;
+                }
+            }
+        } else {
+            Vec::new()
+        };
         let archive = if action == PendingAction::Archive {
             FileDialog::new()
                 .set_title("Choose where to save the duplicate backup")
@@ -312,19 +403,37 @@ impl MediaSiftApp {
         self.pending_action = None;
         self.set_notice(
             NoticeKind::Info,
-            format!("Processing {} selected file(s)...", paths.len()),
+            if verifications.is_empty() {
+                format!("Processing {} selected file(s)...", paths.len())
+            } else {
+                format!(
+                    "Re-verifying exact contents, then processing {} selected file(s)...",
+                    paths.len()
+                )
+            },
         );
         std::thread::spawn(move || {
             let result = match action {
-                PendingAction::Recycle => Ok(recycle_files(&paths)),
-                PendingAction::Delete => Ok(permanently_delete_files(&paths)),
+                PendingAction::Recycle => verify_duplicate_action_groups(&verifications)
+                    .map(|()| recycle_files(&paths))
+                    .map_err(|error| error.to_string()),
+                PendingAction::Delete => verify_duplicate_action_groups(&verifications)
+                    .map(|()| permanently_delete_files(&paths))
+                    .map_err(|error| error.to_string()),
                 PendingAction::Archive => archive_files(
                     &paths,
                     &archive.expect("archive path selected"),
                     compression,
                 ),
             };
-            let _ = sender.send(WorkResult::Action(action, result));
+            let cache_error = matches!(action, PendingAction::Recycle | PendingAction::Delete)
+                .then(|| forget_cached_scan().err().map(|error| error.to_string()))
+                .flatten();
+            let _ = sender.send(WorkResult::Action {
+                action,
+                result,
+                cache_error,
+            });
         });
     }
 
@@ -342,6 +451,7 @@ impl MediaSiftApp {
                     directory,
                     open_when_finished,
                     result: Ok(moved),
+                    cache_error,
                 } => {
                     finished = true;
                     self.notice = organize_completion_notice(
@@ -352,11 +462,13 @@ impl MediaSiftApp {
                         &directory,
                         open_completed_folder(&directory, open_when_finished),
                     );
+                    self.finish_cache_invalidation(cache_error);
                 }
                 WorkResult::Prefixed {
                     directory,
                     open_when_finished,
                     result: Ok(summary),
+                    cache_error,
                 } => {
                     finished = true;
                     let kind = if summary.failures.is_empty() {
@@ -375,8 +487,12 @@ impl MediaSiftApp {
                         &directory,
                         open_completed_folder(&directory, open_when_finished),
                     );
+                    self.finish_cache_invalidation(cache_error);
                 }
-                WorkResult::Enhanced(Ok(output)) => {
+                WorkResult::Enhanced {
+                    result: Ok(output),
+                    cache_error,
+                } => {
                     finished = true;
                     self.set_notice(
                         NoticeKind::Success,
@@ -385,11 +501,13 @@ impl MediaSiftApp {
                             output.display()
                         ),
                     );
+                    self.finish_cache_invalidation(cache_error);
                 }
-                WorkResult::Scanned(Ok((groups, roots))) => {
+                WorkResult::Scanned(Ok(scan)) => {
                     finished = true;
                     self.scan_state = ScanState::Complete;
-                    let review = Review::new(groups, roots);
+                    let review = Review::new(scan.groups, scan.roots);
+                    self.scan_progress = Some(scan.progress);
                     self.scan_report = format_scan_report(
                         review.roots(),
                         self.scan_progress
@@ -401,6 +519,9 @@ impl MediaSiftApp {
                     let extra_copies = review.extra_copies();
                     self.review = Some(review);
                     self.review_page = 0;
+                    self.saved_scan_at = Some(scan.completed_at_unix_seconds);
+                    self.review_verified_this_session = true;
+                    self.saved_scan_error = false;
                     self.set_notice(
                         NoticeKind::Success,
                         if group_count == 0 {
@@ -415,14 +536,80 @@ impl MediaSiftApp {
                 WorkResult::ScanCancelled => {
                     finished = true;
                     self.scan_state = ScanState::Cancelled;
-                    self.review = None;
-                    self.scan_report.clear();
+                    if self.review.is_none() {
+                        self.scan_report.clear();
+                    }
                     self.set_notice(
                         NoticeKind::Info,
-                        "Scan cancelled. Scanning never changes files; adjust the locations and start again when ready.",
+                        if self.review.is_some() {
+                            "Scan cancelled. The previous completed results and saved metadata are still available."
+                        } else {
+                            "Scan cancelled. Scanning never changes files; adjust the locations and start again when ready."
+                        },
                     );
                 }
-                WorkResult::Action(action, Ok(summary)) => {
+                WorkResult::CachedScanLoaded(Ok(Some(scan))) => {
+                    finished = true;
+                    self.scan_state = ScanState::Complete;
+                    let review = Review::new(scan.groups, scan.roots);
+                    self.scan_report =
+                        format_scan_report(review.roots(), &scan.progress, review.groups());
+                    let group_count = review.group_count();
+                    self.review = Some(review);
+                    self.review_page = 0;
+                    self.scan_progress = Some(scan.progress);
+                    self.saved_scan_at = Some(scan.completed_at_unix_seconds);
+                    self.review_verified_this_session = false;
+                    self.saved_scan_error = false;
+                    self.set_notice(
+                        NoticeKind::Info,
+                        format!(
+                            "Opened the last saved scan with {group_count} duplicate group(s). Refresh changes before acting on files."
+                        ),
+                    );
+                }
+                WorkResult::CachedScanLoaded(Ok(None)) => {
+                    finished = true;
+                    self.scan_state = ScanState::Idle;
+                    self.saved_scan_error = false;
+                    self.set_notice(
+                        NoticeKind::Info,
+                        "Choose a workflow. MediaSift will explain any file changes before they happen.",
+                    );
+                }
+                WorkResult::CachedScanLoaded(Err(error)) => {
+                    finished = true;
+                    self.scan_state = ScanState::Idle;
+                    self.saved_scan_error = true;
+                    self.set_notice(
+                        NoticeKind::Warning,
+                        format!(
+                            "The saved scan could not be opened: {error} Delete the unreadable cache from Duplicate finder, then start a new scan."
+                        ),
+                    );
+                }
+                WorkResult::CachedScanForgotten(Ok(())) => {
+                    finished = true;
+                    self.saved_scan_at = None;
+                    self.review_verified_this_session = false;
+                    self.saved_scan_error = false;
+                    self.set_notice(
+                        NoticeKind::Success,
+                        "Saved scan metadata was deleted from Local AppData. Media files were not touched.",
+                    );
+                }
+                WorkResult::CachedScanForgotten(Err(error)) => {
+                    finished = true;
+                    self.set_notice(
+                        NoticeKind::Error,
+                        format!("Could not delete the saved scan metadata: {error}"),
+                    );
+                }
+                WorkResult::Action {
+                    action,
+                    result: Ok(summary),
+                    cache_error,
+                } => {
                     finished = true;
                     let kind = if summary.failures.is_empty() {
                         NoticeKind::Success
@@ -433,6 +620,7 @@ impl MediaSiftApp {
                         PendingAction::Archive => "The originals remain in place.",
                         PendingAction::Recycle | PendingAction::Delete => {
                             self.review = None;
+                            self.review_verified_this_session = false;
                             "The previous review was cleared because the files changed. Run a new scan to refresh it."
                         }
                     };
@@ -444,20 +632,44 @@ impl MediaSiftApp {
                             summary.failures.len()
                         ),
                     );
+                    if action != PendingAction::Archive {
+                        self.finish_cache_invalidation(cache_error);
+                    }
                 }
                 WorkResult::Sorted {
-                    result: Err(error), ..
+                    result: Err(error),
+                    cache_error,
+                    ..
                 }
                 | WorkResult::Prefixed {
-                    result: Err(error), ..
+                    result: Err(error),
+                    cache_error,
+                    ..
                 }
-                | WorkResult::Enhanced(Err(error))
-                | WorkResult::Action(_, Err(error)) => {
+                | WorkResult::Enhanced {
+                    result: Err(error),
+                    cache_error,
+                } => {
                     finished = true;
                     self.set_notice(
                         NoticeKind::Error,
                         format!("{error} Try again or choose a different file or folder."),
                     );
+                    self.finish_cache_invalidation(cache_error);
+                }
+                WorkResult::Action {
+                    action,
+                    result: Err(error),
+                    cache_error,
+                } => {
+                    finished = true;
+                    self.set_notice(
+                        NoticeKind::Error,
+                        format!("{error} Try again or choose a different file or folder."),
+                    );
+                    if action != PendingAction::Archive {
+                        self.finish_cache_invalidation(cache_error);
+                    }
                 }
                 WorkResult::Scanned(Err(error)) => {
                     finished = true;
@@ -479,6 +691,18 @@ impl MediaSiftApp {
     pub(crate) fn select_source(&mut self, root: &Path, only: bool) {
         if let Some(review) = &mut self.review {
             review.keep_from_root(root, only);
+        }
+    }
+
+    fn finish_cache_invalidation(&mut self, cache_error: Option<String>) {
+        self.review = None;
+        self.review_verified_this_session = false;
+        self.saved_scan_at = None;
+        if let Some(error) = cache_error {
+            self.notice.kind = NoticeKind::Warning;
+            self.notice.text.push_str(&format!(
+                " Saved scan metadata could not be deleted: {error} Refresh before relying on it."
+            ));
         }
     }
 

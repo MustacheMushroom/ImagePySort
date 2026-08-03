@@ -1,5 +1,6 @@
 //! Exact-duplicate scan, progress, review, and action workflow.
 
+use chrono::{DateTime, Local, Utc};
 use eframe::egui::{self, Align, Frame, Layout, Margin, RichText};
 
 use super::super::components::{
@@ -8,6 +9,7 @@ use super::super::components::{
 };
 use crate::ScanProgress;
 use crate::desktop::state::{MediaSiftApp, NoticeKind, PendingAction, ScanState};
+use crate::scan_cache::ScanMode;
 
 const DUPLICATE_GROUPS_PER_PAGE: usize = 50;
 const TWO_COLUMN_WORKFLOW_MIN_WIDTH: f32 = 1_040.0;
@@ -37,7 +39,7 @@ impl MediaSiftApp {
             }
         }
 
-        if self.review.is_some() {
+        if self.review.is_some() && !self.scan_state.is_active() {
             ui.add_space(16.0);
             self.review_ui(ui);
         } else if !self.is_working() {
@@ -136,14 +138,42 @@ impl MediaSiftApp {
                 if primary_button(ui, label).clicked() {
                     self.start_media_scan();
                 }
+                if secondary_button(ui, "Full rescan").clicked() {
+                    self.start_full_media_scan();
+                }
             });
+            ui.label(
+                RichText::new(
+                    "Refresh reuses saved hashes for unchanged files. Full rescan ignores saved hashes and rereads every possible duplicate.",
+                )
+                .small()
+                .color(ui.visuals().weak_text_color()),
+            );
+            if self.saved_scan_error {
+                ui.add_space(10.0);
+                warning_banner(
+                    ui,
+                    "The saved scan cannot be read. Delete only its cached metadata, then start a new scan.",
+                );
+                ui.add_space(8.0);
+                if secondary_button(ui, "Delete unreadable cache...").clicked() {
+                    self.pending_forget_scan_cache = true;
+                }
+            }
         });
     }
 
     pub(crate) fn scan_progress_ui(&mut self, ui: &mut egui::Ui, progress: &ScanProgress) {
         section_card(ui, |ui| {
             ui.horizontal(|ui| {
-                number_badge(ui, if self.review.is_some() { "✓" } else { "2" });
+                number_badge(
+                    ui,
+                    if self.scan_state == ScanState::Complete {
+                        "✓"
+                    } else {
+                        "2"
+                    },
+                );
                 ui.vertical(|ui| {
                     let (heading, detail) = match self.scan_state {
                         ScanState::Idle | ScanState::Running => (
@@ -157,6 +187,10 @@ impl MediaSiftApp {
                         ScanState::Cancelled => (
                             "Scan cancelled",
                             "No files were changed. Adjust the locations above and start again when ready.",
+                        ),
+                        ScanState::Complete if !self.review_verified_this_session => (
+                            "Saved scan opened",
+                            "These results have not been checked against the filesystem in this session.",
                         ),
                         ScanState::Complete => ("Scan complete", "Review the matches below."),
                         ScanState::Failed => (
@@ -175,7 +209,8 @@ impl MediaSiftApp {
                     ("Folders", progress.directories_visited),
                     ("Files seen", progress.files_visited),
                     ("Media", progress.media_files_found),
-                    ("Hashed", progress.files_hashed),
+                    ("Hashed now", progress.files_hashed),
+                    ("Reused", progress.hashes_reused),
                     ("Groups", progress.duplicate_groups),
                 ],
             );
@@ -184,8 +219,10 @@ impl MediaSiftApp {
                 ui.add(egui::ProgressBar::new(0.5).animate(true).text(
                     if self.scan_state == ScanState::Cancelling {
                         "Cancelling..."
+                    } else if self.scan_mode == ScanMode::Incremental {
+                        "Checking metadata and changed files..."
                     } else {
-                        "Scanning..."
+                        "Full rescan: reading candidate files..."
                     },
                 ));
                 ui.add_space(10.0);
@@ -197,7 +234,51 @@ impl MediaSiftApp {
                     ui.add_enabled(false, egui::Button::new("Cancellation requested"));
                 }
             }
-            if !self.scan_report.is_empty() {
+            if self.saved_scan_at.is_some() && !self.scan_state.is_active() {
+                ui.add_space(12.0);
+                if let Some(saved_at) = self
+                    .saved_scan_at
+                    .and_then(|timestamp| DateTime::<Utc>::from_timestamp(timestamp, 0))
+                {
+                    ui.label(
+                        RichText::new(format!(
+                            "Saved {}",
+                            saved_at.with_timezone(&Local).format("%Y-%m-%d at %H:%M")
+                        ))
+                        .strong(),
+                    );
+                    ui.add_space(6.0);
+                }
+                if !self.review_verified_this_session {
+                    warning_banner(
+                        ui,
+                        "Saved results are read-only until refreshed. Files may have changed while MediaSift was closed.",
+                    );
+                } else {
+                    ui.label(
+                        RichText::new(
+                            "This completed scan is saved in Local AppData for the next launch.",
+                        )
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                    );
+                }
+                ui.add_space(8.0);
+                ui.add_enabled_ui(!self.is_working(), |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        if primary_button(ui, "Refresh saved locations").clicked() {
+                            self.refresh_saved_scan(ScanMode::Incremental);
+                        }
+                        if secondary_button(ui, "Full rescan saved locations").clicked() {
+                            self.refresh_saved_scan(ScanMode::Full);
+                        }
+                        if secondary_button(ui, "Forget saved scan...").clicked() {
+                            self.pending_forget_scan_cache = true;
+                        }
+                    });
+                });
+            }
+            if !self.scan_report.is_empty() && !self.scan_state.is_active() {
                 ui.add_space(12.0);
                 self.report_actions(ui);
             }
@@ -462,20 +543,34 @@ impl MediaSiftApp {
                     "One or more groups have no keeper. Mark at least one file Keep in every group before continuing.",
                 );
             }
+            if !self.review_verified_this_session {
+                ui.add_space(12.0);
+                warning_banner(
+                    ui,
+                    "Refresh this saved scan before recycling, deleting, or archiving files.",
+                );
+            }
             ui.add_space(14.0);
-            ui.add_enabled_ui(!self.is_working() && valid && action_count > 0, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if primary_button(ui, &format!("Recycle {action_count} file(s)")).clicked() {
-                        self.begin_action(PendingAction::Recycle);
-                    }
-                    if secondary_button(ui, "Create ZIP backup...").clicked() {
-                        self.begin_action(PendingAction::Archive);
-                    }
-                    if danger_button(ui, "Permanently delete...").clicked() {
-                        self.begin_action(PendingAction::Delete);
-                    }
-                });
-            });
+            ui.add_enabled_ui(
+                !self.is_working()
+                    && self.review_verified_this_session
+                    && valid
+                    && action_count > 0,
+                |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        if primary_button(ui, &format!("Recycle {action_count} file(s)")).clicked()
+                        {
+                            self.begin_action(PendingAction::Recycle);
+                        }
+                        if secondary_button(ui, "Create ZIP backup...").clicked() {
+                            self.begin_action(PendingAction::Archive);
+                        }
+                        if danger_button(ui, "Permanently delete...").clicked() {
+                            self.begin_action(PendingAction::Delete);
+                        }
+                    });
+                },
+            );
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 ui.label("ZIP compression");

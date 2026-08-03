@@ -102,6 +102,22 @@ impl MediaSiftApp {
                 self.pending_date_prefix = None;
             }
         }
+
+        if self.pending_forget_scan_cache
+            && let Some(confirmed) = confirmation_dialog(
+                context,
+                "Forget the saved scan?",
+                "MediaSift will delete the saved directory paths, timestamps, sizes, and SHA-256 hashes from Local AppData.",
+                "No media files will be changed. The current on-screen review stays available until you close MediaSift, but it will not return next time.",
+                "Forget saved scan",
+            )
+        {
+            if confirmed {
+                self.forget_saved_scan();
+            } else {
+                self.pending_forget_scan_cache = false;
+            }
+        }
     }
 }
 
