@@ -1,7 +1,5 @@
 //! Exact-duplicate scan, progress, review, and action workflow.
 
-use std::path::PathBuf;
-
 use eframe::egui::{self, Align, Frame, Layout, Margin, RichText};
 
 use super::super::components::{
@@ -10,6 +8,8 @@ use super::super::components::{
 };
 use crate::ScanProgress;
 use crate::desktop::state::{MediaSiftApp, NoticeKind, PendingAction, ScanState};
+
+const DUPLICATE_GROUPS_PER_PAGE: usize = 50;
 
 impl MediaSiftApp {
     pub(crate) fn duplicates_ui(&mut self, ui: &mut egui::Ui) {
@@ -193,7 +193,7 @@ impl MediaSiftApp {
         let Some(review) = &self.review else {
             return;
         };
-        if review.groups.is_empty() {
+        if review.is_empty() {
             success_state(
                 ui,
                 "No exact duplicates found",
@@ -204,12 +204,13 @@ impl MediaSiftApp {
             return;
         }
 
-        let groups = review.groups.len();
+        let groups = review.group_count();
         let total_files = review.total_files();
         let extra_copies = review.extra_copies();
         let action_count = review.action_count();
-        let valid = review.every_group_has_keeper();
-        let roots = review.roots.clone();
+        let roots = review.roots().to_vec();
+        let page_count = review.page_count(DUPLICATE_GROUPS_PER_PAGE);
+        self.review_page = self.review_page.min(page_count.saturating_sub(1));
 
         section_card(ui, |ui| {
             ui.horizontal(|ui| {
@@ -261,23 +262,97 @@ impl MediaSiftApp {
         });
 
         ui.add_space(12.0);
-        let group_paths: Vec<Vec<PathBuf>> = self
+        let bounds = self
             .review
             .as_ref()
             .expect("review exists")
-            .groups
-            .values()
-            .cloned()
-            .collect();
-        egui::ScrollArea::vertical()
-            .id_salt("duplicate_groups")
-            .max_height(500.0)
-            .show(ui, |ui| {
-                for (index, paths) in group_paths.iter().enumerate() {
-                    duplicate_group_card(ui, index, paths, &mut self.review);
-                    ui.add_space(10.0);
+            .page_bounds(self.review_page, DUPLICATE_GROUPS_PER_PAGE);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "Groups {}–{} of {groups} · Page {} of {page_count}",
+                    bounds.start + 1,
+                    bounds.end,
+                    self.review_page + 1,
+                ))
+                .strong(),
+            );
+            ui.add_enabled_ui(self.review_page > 0, |ui| {
+                if ui.small_button("First").clicked() {
+                    self.review_page = 0;
+                }
+                if ui.small_button("Previous").clicked() {
+                    self.review_page = self.review_page.saturating_sub(1);
                 }
             });
+            let mut page_number = self.review_page + 1;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut page_number)
+                        .range(1..=page_count)
+                        .prefix("Go to page "),
+                )
+                .on_hover_text("Type or drag to jump directly to a results page")
+                .changed()
+            {
+                self.review_page = page_number - 1;
+            }
+            ui.add_enabled_ui(self.review_page + 1 < page_count, |ui| {
+                if ui.small_button("Next").clicked() {
+                    self.review_page += 1;
+                }
+                if ui.small_button("Last").clicked() {
+                    self.review_page = page_count - 1;
+                }
+            });
+        });
+        ui.label(
+            RichText::new("Only 50 groups are shown at once to keep very large scans responsive.")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+        ui.add_space(8.0);
+
+        let bounds = self
+            .review
+            .as_ref()
+            .expect("review exists")
+            .page_bounds(self.review_page, DUPLICATE_GROUPS_PER_PAGE);
+        let changes = {
+            let review = self.review.as_ref().expect("review exists");
+            let mut changes = Vec::new();
+            egui::ScrollArea::vertical()
+                .id_salt(("duplicate_groups", self.review_page))
+                .max_height(500.0)
+                .show(ui, |ui| {
+                    for (offset, (group, paths)) in review
+                        .groups()
+                        .iter()
+                        .skip(bounds.start)
+                        .take(bounds.len())
+                        .enumerate()
+                    {
+                        changes.extend(duplicate_group_card(
+                            ui,
+                            bounds.start + offset,
+                            group,
+                            paths,
+                            review,
+                        ));
+                        ui.add_space(10.0);
+                    }
+                });
+            changes
+        };
+        if let Some(review) = &mut self.review {
+            for change in changes {
+                review.set_kept(&change.group, &change.path, change.keep);
+            }
+        }
+
+        let (action_count, valid) = self.review.as_ref().map_or((0, true), |review| {
+            (review.action_count(), review.every_group_has_keeper())
+        });
 
         ui.add_space(6.0);
         section_card(ui, |ui| {

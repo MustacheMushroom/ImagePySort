@@ -388,6 +388,27 @@ pub fn unkept_duplicate_paths(
     Ok(unkept)
 }
 
+/// Return explicitly selected duplicate paths when every group still retains a copy.
+///
+/// Unlike [`unkept_duplicate_paths`], this representation stays empty for the safe default where
+/// every file is kept. That avoids duplicating millions of paths in memory after a large scan.
+pub fn selected_duplicate_paths(
+    groups: &DuplicateGroups,
+    selected: &HashSet<PathBuf>,
+) -> Result<Vec<PathBuf>, String> {
+    for paths in groups.values() {
+        if paths.iter().all(|path| selected.contains(path)) {
+            return Err("Each duplicate group must retain at least one item.".to_owned());
+        }
+    }
+    Ok(groups
+        .values()
+        .flatten()
+        .filter(|path| selected.contains(*path))
+        .cloned()
+        .collect())
+}
+
 /// Move files to the operating system Recycle Bin.
 pub fn recycle_files(paths: &[PathBuf]) -> FileActionSummary {
     apply_files(paths, |path| {
@@ -1054,6 +1075,24 @@ mod tests {
             unkept_duplicate_paths(&groups, &kept).unwrap(),
             vec![second]
         );
+    }
+
+    #[test]
+    fn selected_paths_are_sparse_and_require_a_keeper_in_every_group() {
+        let first = PathBuf::from("one.jpg");
+        let second = PathBuf::from("two.jpg");
+        let mut groups = DuplicateGroups::new();
+        groups.insert("hash".to_owned(), vec![first.clone(), second.clone()]);
+
+        assert_eq!(
+            selected_duplicate_paths(&groups, &HashSet::new()).unwrap(),
+            Vec::<PathBuf>::new()
+        );
+        assert_eq!(
+            selected_duplicate_paths(&groups, &HashSet::from([second.clone()])).unwrap(),
+            vec![second.clone()]
+        );
+        assert!(selected_duplicate_paths(&groups, &HashSet::from([first, second])).is_err());
     }
 
     #[test]

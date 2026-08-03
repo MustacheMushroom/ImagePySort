@@ -1,7 +1,6 @@
 //! Background operations and file-dialog orchestration.
 
 use std::{
-    collections::HashSet,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -17,7 +16,7 @@ use crate::{
     ArchiveCompression, DuplicateScanOutcome, ScanProgress, archive_files, computer_scan_roots,
     enhance_photo, find_exact_duplicates_with_progress_and_cancel, format_scan_report,
     permanently_delete_files, prefix_media_files_with_date, recycle_files, restoration_prompt,
-    sort_images, unkept_duplicate_paths,
+    sort_images,
 };
 
 use super::state::{
@@ -229,6 +228,7 @@ impl MediaSiftApp {
             ),
         );
         self.review = None;
+        self.review_page = 0;
         self.scan_progress = Some(ScanProgress::default());
         self.scan_report.clear();
         std::thread::spawn(move || {
@@ -268,13 +268,13 @@ impl MediaSiftApp {
         }
     }
 
-    pub(crate) fn selected_unkept(&self) -> Result<Vec<PathBuf>, String> {
+    pub(crate) fn selected_action_paths(&self) -> Result<Vec<PathBuf>, String> {
         let review = self.review.as_ref().ok_or("Run a duplicate scan first.")?;
-        unkept_duplicate_paths(&review.groups, &review.kept)
+        review.selected_paths()
     }
 
     pub(crate) fn begin_action(&mut self, action: PendingAction) {
-        match self.selected_unkept() {
+        match self.selected_action_paths() {
             Ok(paths) if paths.is_empty() => self.set_notice(
                 NoticeKind::Info,
                 "No files are selected for action. Uncheck Keep on at least one extra copy.",
@@ -285,7 +285,7 @@ impl MediaSiftApp {
     }
 
     pub(crate) fn run_action(&mut self, action: PendingAction) {
-        let Ok(paths) = self.selected_unkept() else {
+        let Ok(paths) = self.selected_action_paths() else {
             return;
         };
         let archive = if action == PendingAction::Archive {
@@ -389,22 +389,18 @@ impl MediaSiftApp {
                 WorkResult::Scanned(Ok((groups, roots))) => {
                     finished = true;
                     self.scan_state = ScanState::Complete;
-                    let mut review = Review {
-                        groups,
-                        kept: HashSet::new(),
-                        roots,
-                    };
-                    review.keep_all();
+                    let review = Review::new(groups, roots);
                     self.scan_report = format_scan_report(
-                        &review.roots,
+                        review.roots(),
                         self.scan_progress
                             .as_ref()
                             .unwrap_or(&ScanProgress::default()),
-                        &review.groups,
+                        review.groups(),
                     );
-                    let group_count = review.groups.len();
+                    let group_count = review.group_count();
                     let extra_copies = review.extra_copies();
                     self.review = Some(review);
+                    self.review_page = 0;
                     self.set_notice(
                         NoticeKind::Success,
                         if group_count == 0 {
@@ -482,14 +478,7 @@ impl MediaSiftApp {
 
     pub(crate) fn select_source(&mut self, root: &Path, only: bool) {
         if let Some(review) = &mut self.review {
-            if only {
-                review.kept.clear();
-            }
-            for path in review.groups.values().flatten() {
-                if path.starts_with(root) {
-                    review.kept.insert(path.clone());
-                }
-            }
+            review.keep_from_root(root, only);
         }
     }
 

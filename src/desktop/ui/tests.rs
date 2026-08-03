@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, Vec2};
 
-use crate::ScanProgress;
+use crate::{DuplicateGroups, ScanProgress};
 
 use super::configure_style;
 use crate::desktop::state::{MediaSiftApp, Page, Review, ScanState};
@@ -103,6 +103,34 @@ fn duplicate_review_renders_in_both_themes() {
         Page::Duplicates,
         Some(dark_review),
     );
+}
+
+#[test]
+fn duplicate_review_clamps_and_renders_the_last_bounded_page() {
+    let groups: DuplicateGroups = (0..55_298)
+        .map(|index| {
+            (
+                format!("hash-{index:03}"),
+                vec![
+                    PathBuf::from(format!("A/{index}.jpg")),
+                    PathBuf::from(format!("B/{index}.jpg")),
+                ],
+            )
+        })
+        .collect();
+    let context = test_context(egui::Theme::Dark);
+    let mut app = MediaSiftApp::initial();
+    app.page = Page::Duplicates;
+    app.review = Some(Review::new(groups, Vec::new()));
+    app.review_page = usize::MAX;
+    app.scan_state = ScanState::Complete;
+    app.scan_progress = Some(test_progress());
+
+    render_frame(&context, Vec2::new(1280.0, 800.0), |ui| {
+        app.duplicates_ui(ui);
+    });
+
+    assert_eq!(app.review_page, 1_105);
 }
 
 #[test]

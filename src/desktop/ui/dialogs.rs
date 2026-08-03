@@ -8,7 +8,7 @@ use crate::desktop::state::{MediaSiftApp, PendingAction};
 impl MediaSiftApp {
     pub(crate) fn dialogs(&mut self, context: &egui::Context) {
         if let Some(action) = self.pending_action {
-            let count = self.selected_unkept().map_or(0, |paths| paths.len());
+            let count = self.selected_action_paths().map_or(0, |paths| paths.len());
             egui::Window::new(action.title())
                 .id(egui::Id::new("confirm_file_action"))
                 .anchor(Align2::CENTER_CENTER, Vec2::ZERO)

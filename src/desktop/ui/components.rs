@@ -186,12 +186,20 @@ pub(super) fn metric_row(ui: &mut egui::Ui, metrics: &[(&str, usize)]) {
     });
 }
 
+pub(super) struct KeepChange {
+    pub(super) group: String,
+    pub(super) path: PathBuf,
+    pub(super) keep: bool,
+}
+
 pub(super) fn duplicate_group_card(
     ui: &mut egui::Ui,
     index: usize,
+    group: &str,
     paths: &[PathBuf],
-    review: &mut Option<Review>,
-) {
+    review: &Review,
+) -> Vec<KeepChange> {
+    let mut changes = Vec::new();
     section_card(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(
@@ -206,9 +214,7 @@ pub(super) fn duplicate_group_card(
         });
         ui.add_space(8.0);
         for path in paths {
-            let mut keep = review
-                .as_ref()
-                .is_some_and(|review| review.kept.contains(path));
+            let mut keep = review.is_kept(path);
             let filename = path.file_name().map_or_else(
                 || path.display().to_string(),
                 |name| name.to_string_lossy().into(),
@@ -223,13 +229,12 @@ pub(super) fn duplicate_group_card(
                             .checkbox(&mut keep, "Keep")
                             .on_hover_text("Checked files will not be included in any action")
                             .changed()
-                            && let Some(review) = review
                         {
-                            if keep {
-                                review.kept.insert(path.clone());
-                            } else {
-                                review.kept.remove(path);
-                            }
+                            changes.push(KeepChange {
+                                group: group.to_owned(),
+                                path: path.clone(),
+                                keep,
+                            });
                         }
                         ui.vertical(|ui| {
                             ui.label(RichText::new(filename).strong());
@@ -244,6 +249,7 @@ pub(super) fn duplicate_group_card(
             ui.add_space(5.0);
         }
     });
+    changes
 }
 
 pub(super) fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
