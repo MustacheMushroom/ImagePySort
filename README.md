@@ -3,7 +3,24 @@
 MediaSift is a Rust desktop utility for organizing images by capture date and
 reviewing exact duplicate image, video, and audio files.
 
-## Run
+## Install on Windows
+
+Run the Windows setup executable from a release artifact or build it locally
+with:
+
+```powershell
+cargo install cargo-packager --version 0.11.8 --locked
+.\scripts\Build-WindowsInstaller.ps1
+```
+
+The installer defaults to `C:\Program Files\MediaSift`, lets you choose a
+different destination, creates a searchable **MediaSift** Start Menu shortcut,
+and registers a standard uninstaller in Windows Installed apps. It does not add
+file associations, startup items, services, or application-settings registry
+keys. See [the Windows installer guide](doc/WINDOWS_INSTALLER.md) for packaging
+and registry details.
+
+## Run from source
 
 Install the [Rust toolchain](https://www.rust-lang.org/tools/install), then run:
 

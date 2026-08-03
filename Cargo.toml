@@ -4,6 +4,22 @@ version = "0.1.0"
 edition = "2024"
 description = "Organize images and review exact duplicate media files"
 license = "GPL-3.0-or-later"
+authors = ["Mustache Mushroom"]
+repository = "https://github.com/MustacheMushroom/MediaSift"
+
+[package.metadata.packager]
+product-name = "MediaSift"
+identifier = "com.mustachemushroom.media-sift"
+publisher = "Mustache Mushroom"
+homepage = "https://github.com/MustacheMushroom/MediaSift"
+category = "Utility"
+formats = ["nsis"]
+resources = ["LICENSE"]
+before-packaging-command = "cargo build --release --locked"
+
+[package.metadata.packager.nsis]
+installMode = "perMachine"
+languages = ["English"]
 
 [dependencies]
 chrono = "0.4"
