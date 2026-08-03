@@ -1,9 +1,11 @@
+use std::cell::Cell;
 use std::path::PathBuf;
 
 use eframe::egui::{self, Vec2};
 
 use crate::{DuplicateGroups, ScanProgress};
 
+use super::components::section_card;
 use super::configure_style;
 use crate::desktop::state::{MediaSiftApp, Page, Review, ScanState};
 
@@ -26,7 +28,16 @@ fn test_progress() -> ScanProgress {
 }
 
 fn render_frame(context: &egui::Context, size: Vec2, mut content: impl FnMut(&mut egui::Ui)) {
-    let output = context.run(
+    let output = render_output(context, size, |ui| content(ui));
+    assert!(!output.shapes.is_empty());
+}
+
+fn render_output(
+    context: &egui::Context,
+    size: Vec2,
+    mut content: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    context.run(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             ..Default::default()
@@ -34,8 +45,7 @@ fn render_frame(context: &egui::Context, size: Vec2, mut content: impl FnMut(&mu
         |context| {
             egui::CentralPanel::default().show(context, |ui| content(ui));
         },
-    );
-    assert!(!output.shapes.is_empty());
+    )
 }
 
 fn render_at(size: Vec2, theme: egui::Theme, page: Page, review: Option<Review>) {
@@ -102,6 +112,50 @@ fn duplicate_review_renders_in_both_themes() {
         egui::Theme::Dark,
         Page::Duplicates,
         Some(dark_review),
+    );
+
+    let ultrawide_review = Review::sample_for_tests();
+    render_at(
+        Vec2::new(1800.0, 1000.0),
+        egui::Theme::Dark,
+        Page::Duplicates,
+        Some(ultrawide_review),
+    );
+}
+
+#[test]
+fn section_cards_fill_their_responsive_container() {
+    let context = test_context(egui::Theme::Dark);
+    let available = Cell::new(0.0);
+    let card_width = Cell::new(0.0);
+
+    render_frame(&context, Vec2::new(1200.0, 700.0), |ui| {
+        available.set(ui.available_width());
+        section_card(ui, |ui| {
+            card_width.set(ui.min_rect().width());
+            ui.label("Responsive card");
+        });
+    });
+
+    assert!(card_width.get() >= available.get() - 40.0);
+}
+
+#[test]
+fn duplicate_results_do_not_create_a_nested_scroll_clip() {
+    let context = test_context(egui::Theme::Dark);
+    let mut app = MediaSiftApp::initial();
+    app.review = Some(Review::sample_for_tests());
+    app.scan_state = ScanState::Complete;
+    app.scan_progress = Some(test_progress());
+    let size = Vec2::new(1600.0, 1000.0);
+
+    let output = render_output(&context, size, |ui| app.duplicates_ui(ui));
+
+    assert!(
+        output
+            .shapes
+            .iter()
+            .all(|shape| shape.clip_rect.height() >= size.y - 2.0)
     );
 }
 

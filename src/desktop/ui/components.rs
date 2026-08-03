@@ -9,7 +9,7 @@ use crate::desktop::state::{NoticeKind, Review};
 pub(super) const ACCENT: Color32 = Color32::from_rgb(37, 99, 235);
 pub(super) const ACCENT_HOVER: Color32 = Color32::from_rgb(29, 78, 216);
 const DANGER: Color32 = Color32::from_rgb(180, 35, 24);
-pub(super) const CONTENT_MAX_WIDTH: f32 = 1120.0;
+pub(super) const CONTENT_MAX_WIDTH: f32 = 1440.0;
 
 pub(super) fn chrome_frame(context: &egui::Context) -> Frame {
     Frame::new()
@@ -47,7 +47,10 @@ pub(super) fn section_card<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui:
         ))
         .corner_radius(12)
         .inner_margin(Margin::same(18))
-        .show(ui, content)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            content(ui)
+        })
         .inner
 }
 
@@ -83,6 +86,7 @@ pub(super) fn empty_state(ui: &mut egui::Ui, title: &str, description: &str) {
         .corner_radius(12)
         .inner_margin(Margin::same(24))
         .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             ui.vertical_centered(|ui| {
                 ui.heading(title);
                 ui.label(description);
@@ -104,6 +108,7 @@ pub(super) fn success_state(ui: &mut egui::Ui, title: &str, description: &str) {
         .corner_radius(12)
         .inner_margin(Margin::same(20))
         .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             ui.heading(title);
             ui.label(description);
         });
@@ -120,6 +125,7 @@ pub(super) fn info_banner(ui: &mut egui::Ui, title: &str, description: &str) {
         .corner_radius(10)
         .inner_margin(Margin::same(16))
         .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             ui.label(RichText::new(title).strong());
             ui.label(description);
         });
@@ -139,6 +145,7 @@ pub(super) fn warning_banner(ui: &mut egui::Ui, message: &str) {
         .corner_radius(8)
         .inner_margin(Margin::same(12))
         .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             ui.label(RichText::new("Selection needs attention").strong());
             ui.label(message);
         });
@@ -224,9 +231,10 @@ pub(super) fn duplicate_group_card(
                 .corner_radius(8)
                 .inner_margin(Margin::symmetric(12, 9))
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.horizontal_top(|ui| {
                         if ui
-                            .checkbox(&mut keep, "Keep")
+                            .checkbox(&mut keep, "Keep this copy")
                             .on_hover_text("Checked files will not be included in any action")
                             .changed()
                         {
@@ -237,11 +245,14 @@ pub(super) fn duplicate_group_card(
                             });
                         }
                         ui.vertical(|ui| {
-                            ui.label(RichText::new(filename).strong());
-                            ui.label(
-                                RichText::new(path.display().to_string())
-                                    .small()
-                                    .color(ui.visuals().weak_text_color()),
+                            ui.add(egui::Label::new(RichText::new(filename).strong()).wrap());
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(path.display().to_string())
+                                        .small()
+                                        .color(ui.visuals().weak_text_color()),
+                                )
+                                .wrap(),
                             );
                         });
                     });
