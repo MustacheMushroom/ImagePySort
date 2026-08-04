@@ -375,6 +375,7 @@ pub(crate) struct MediaSiftApp {
     pub(crate) pending_sort: Option<PathBuf>,
     pub(crate) pending_date_prefix: Option<PathBuf>,
     pub(crate) use_oldest_date: bool,
+    pub(crate) correct_existing_date_prefixes: bool,
     pub(crate) open_sort_folder_when_finished: bool,
     pub(crate) open_prefix_folder_when_finished: bool,
     pub(crate) scan_progress: Option<ScanProgress>,
@@ -408,6 +409,7 @@ impl MediaSiftApp {
             pending_sort: None,
             pending_date_prefix: None,
             use_oldest_date: false,
+            correct_existing_date_prefixes: false,
             open_sort_folder_when_finished: false,
             open_prefix_folder_when_finished: false,
             scan_progress: None,
@@ -525,6 +527,7 @@ mod tests {
         let app = MediaSiftApp::initial();
         assert!(!app.open_sort_folder_when_finished);
         assert!(!app.open_prefix_folder_when_finished);
+        assert!(!app.correct_existing_date_prefixes);
     }
 
     #[test]

@@ -13,9 +13,9 @@ use eframe::egui;
 use rfd::FileDialog;
 
 use crate::{
-    ArchiveCompression, ScanProgress, archive_files, computer_scan_roots, enhance_photo,
-    format_scan_report, permanently_delete_files, prefix_media_files_with_date, recycle_files,
-    restoration_prompt,
+    ArchiveCompression, DatePrefixOptions, ScanProgress, archive_files, computer_scan_roots,
+    enhance_photo, format_scan_report, permanently_delete_files, prefix_media_files_with_date,
+    recycle_files, restoration_prompt,
     scan_cache::{
         CachedScanOutcome, ScanMode, find_exact_duplicates_with_cache_and_cancel,
         forget_cached_scan, load_cached_scan,
@@ -144,7 +144,10 @@ impl MediaSiftApp {
     }
 
     pub(crate) fn run_date_prefix(&mut self, directory: PathBuf) {
-        let use_oldest_date = self.use_oldest_date;
+        let options = DatePrefixOptions {
+            use_oldest_filesystem_date: self.use_oldest_date,
+            correct_existing_prefixes: self.correct_existing_date_prefixes,
+        };
         let open_when_finished = self.open_prefix_folder_when_finished;
         let (sender, receiver) = mpsc::channel();
         self.receiver = Some(receiver);
@@ -155,7 +158,7 @@ impl MediaSiftApp {
             format!("Adding date prefixes below {}...", directory.display()),
         );
         std::thread::spawn(move || {
-            let result = prefix_media_files_with_date(&directory, use_oldest_date);
+            let result = prefix_media_files_with_date(&directory, options);
             let cache_error = forget_cached_scan().err().map(|error| error.to_string());
             let _ = sender.send(WorkResult::Prefixed {
                 directory,
@@ -479,8 +482,11 @@ impl MediaSiftApp {
                     self.notice = organize_completion_notice(
                         kind,
                         format!(
-                            "Renamed {} media file(s), skipped {}, and encountered {} failure(s).",
+                            "Renamed {} media file(s): {} used embedded capture dates, {} used filesystem dates, and {} corrected an existing prefix. Skipped {} and encountered {} failure(s).",
                             summary.renamed,
+                            summary.capture_dates_used,
+                            summary.filesystem_dates_used,
+                            summary.corrected_prefixes,
                             summary.skipped,
                             summary.failures.len()
                         ),

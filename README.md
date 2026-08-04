@@ -39,10 +39,12 @@ The interface is organized into four workflows:
   file actions stay disabled until at least one copy in every group is protected.
 - **Organize** can sort photos into `Year/Month` folders using EXIF
   `DateTimeOriginal` information. It can also prefix media filenames with a
-  `YYYY-MM-DD` plus `-` filesystem-date
-  prefix to known media files below a chosen folder. The app skips already
-  prefixed files, prevents filename collisions, and asks for confirmation before
-  either operation changes files. Each organizer can optionally open the
+  `YYYY-MM-DD` plus `-` prefix below a chosen folder. Embedded photo capture
+  dates (**Date taken**) take priority; filesystem creation/modified dates are
+  used only when capture metadata is unavailable. Existing prefixes are skipped
+  by default, with an explicit option to correct prefixes that disagree with
+  metadata. The app prevents filename collisions and asks for confirmation
+  before either operation changes files. Each organizer can optionally open the
   selected result folder in File Explorer after a successful run.
 - **Photo tools** can create a separate PNG, BMP, or TIFF sibling image with an
   `(Enhanced)` filename suffix using mild local dust/noise cleanup, contrast,

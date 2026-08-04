@@ -86,7 +86,12 @@ impl MediaSiftApp {
                     directory.display()
                 ),
                 &format!(
-                    "Already-prefixed files are skipped and name collisions are prevented. MediaSift does not provide an undo command.{}",
+                    "Embedded capture dates are preferred; filesystem dates are used only as fallback. {} Name collisions are prevented. MediaSift does not provide an undo command.{}",
+                    if self.correct_existing_date_prefixes {
+                        "Existing prefixes that disagree with metadata will be corrected."
+                    } else {
+                        "Already-prefixed files will be skipped."
+                    },
                     if self.open_prefix_folder_when_finished {
                         " File Explorer will open this folder after a successful run."
                     } else {
