@@ -791,7 +791,7 @@ struct FilenameDate {
 
 fn preferred_media_date(path: &Path, options: DatePrefixOptions) -> io::Result<FilenameDate> {
     if media_kind(path) == Some(MediaKind::Image)
-        && let Some(date) = exif_capture_date(path)
+        && let Some(date) = filename_embedded_date(path)
     {
         return Ok(FilenameDate {
             text: date.format("%Y-%m-%d").to_string(),
@@ -914,18 +914,21 @@ fn absolute_path(path: &Path) -> io::Result<PathBuf> {
 }
 
 fn date_folder(path: &Path) -> Option<(u16, &'static str)> {
-    let date = exif_capture_date(path)?;
+    let date = exif_date_from_tags(path, &[Tag::DateTimeOriginal])?;
     let year = u16::try_from(date.year()).ok()?;
     Some((year, month_name(date.month())?))
 }
 
-fn exif_capture_date(path: &Path) -> Option<NaiveDate> {
+fn filename_embedded_date(path: &Path) -> Option<NaiveDate> {
+    exif_date_from_tags(path, &[Tag::DateTimeOriginal, Tag::DateTimeDigitized])
+}
+
+fn exif_date_from_tags(path: &Path, tags: &[Tag]) -> Option<NaiveDate> {
     let file = File::open(path).ok()?;
     let mut reader = BufReader::new(file);
     let exif = Reader::new().read_from_container(&mut reader).ok()?;
-    [Tag::DateTimeOriginal, Tag::DateTimeDigitized, Tag::DateTime]
-        .into_iter()
-        .filter_map(|tag| exif.get_field(tag, In::PRIMARY))
+    tags.iter()
+        .filter_map(|tag| exif.get_field(*tag, In::PRIMARY))
         .find_map(|field| {
             let Value::Ascii(values) = &field.value else {
                 return None;
@@ -1011,10 +1014,11 @@ mod tests {
     }
 
     fn jpeg_with_exif_date(date: &str) -> Vec<u8> {
-        let mut tiff = Vec::new();
-        tiff.extend_from_slice(b"II");
-        tiff.extend_from_slice(&42_u16.to_le_bytes());
-        tiff.extend_from_slice(&8_u32.to_le_bytes());
+        jpeg_with_exif_sub_ifd_date(0x9003, date)
+    }
+
+    fn jpeg_with_exif_sub_ifd_date(tag: u16, date: &str) -> Vec<u8> {
+        let mut tiff = little_endian_tiff_header();
 
         // IFD0 with an ExifIFDPointer to the EXIF IFD at byte 26.
         tiff.extend_from_slice(&1_u16.to_le_bytes());
@@ -1026,7 +1030,7 @@ mod tests {
 
         // EXIF IFD with DateTimeOriginal, whose NUL-terminated data starts at byte 44.
         tiff.extend_from_slice(&1_u16.to_le_bytes());
-        tiff.extend_from_slice(&0x9003_u16.to_le_bytes());
+        tiff.extend_from_slice(&tag.to_le_bytes());
         tiff.extend_from_slice(&2_u16.to_le_bytes());
         tiff.extend_from_slice(&((date.len() + 1) as u32).to_le_bytes());
         tiff.extend_from_slice(&44_u32.to_le_bytes());
@@ -1034,10 +1038,36 @@ mod tests {
         tiff.extend_from_slice(date.as_bytes());
         tiff.push(0);
 
+        jpeg_from_tiff(&tiff)
+    }
+
+    fn jpeg_with_general_exif_datetime(date: &str) -> Vec<u8> {
+        let mut tiff = little_endian_tiff_header();
+        tiff.extend_from_slice(&1_u16.to_le_bytes());
+        tiff.extend_from_slice(&0x0132_u16.to_le_bytes());
+        tiff.extend_from_slice(&2_u16.to_le_bytes());
+        tiff.extend_from_slice(&((date.len() + 1) as u32).to_le_bytes());
+        tiff.extend_from_slice(&26_u32.to_le_bytes());
+        tiff.extend_from_slice(&0_u32.to_le_bytes());
+        tiff.extend_from_slice(date.as_bytes());
+        tiff.push(0);
+
+        jpeg_from_tiff(&tiff)
+    }
+
+    fn little_endian_tiff_header() -> Vec<u8> {
+        let mut tiff = Vec::new();
+        tiff.extend_from_slice(b"II");
+        tiff.extend_from_slice(&42_u16.to_le_bytes());
+        tiff.extend_from_slice(&8_u32.to_le_bytes());
+        tiff
+    }
+
+    fn jpeg_from_tiff(tiff: &[u8]) -> Vec<u8> {
         let mut jpeg = vec![0xff, 0xd8, 0xff, 0xe1];
         jpeg.extend_from_slice(&((tiff.len() + 8) as u16).to_be_bytes());
         jpeg.extend_from_slice(b"Exif\0\0");
-        jpeg.extend_from_slice(&tiff);
+        jpeg.extend_from_slice(tiff);
         jpeg.extend_from_slice(&[0xff, 0xd9]);
         jpeg
     }
@@ -1195,6 +1225,21 @@ mod tests {
     }
 
     #[test]
+    fn folder_sort_ignores_general_exif_datetime() {
+        let root = temp_dir();
+        let source = root.join("edited.jpg");
+        fs::write(
+            &source,
+            jpeg_with_general_exif_datetime("2010:09:20 15:55:00"),
+        )
+        .unwrap();
+
+        assert_eq!(sort_images(&root).unwrap(), 0);
+        assert!(source.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn report_lists_groups_and_extra_copies() {
         let mut groups = DuplicateGroups::new();
         groups.insert(
@@ -1291,6 +1336,23 @@ mod tests {
             root.join("2010-09-20 - A Tree Over the River.jpg")
                 .is_file()
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn filename_prefix_accepts_digitized_capture_date() {
+        let root = temp_dir();
+        let source = root.join("scanned-photo.jpg");
+        fs::write(
+            &source,
+            jpeg_with_exif_sub_ifd_date(0x9004, "2010:09:20 15:55:00"),
+        )
+        .unwrap();
+
+        let summary = prefix_media_files_with_date(&root, DatePrefixOptions::default()).unwrap();
+
+        assert_eq!(summary.capture_dates_used, 1);
+        assert!(root.join("2010-09-20 - scanned-photo.jpg").is_file());
         fs::remove_dir_all(root).unwrap();
     }
 
