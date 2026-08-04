@@ -63,16 +63,27 @@ impl MediaSiftApp {
             ui.label("Example: photo.jpg → 2025-07-14 - photo.jpg");
             ui.add_space(10.0);
             check_line(ui, "Works with known image, video, and audio files");
-            check_line(ui, "Skips files that already start with a date");
+            check_line(ui, "Prefers embedded photo capture dates (Date taken)");
+            check_line(
+                ui,
+                "Falls back to filesystem dates when capture data is absent",
+            );
             check_line(ui, "Prevents filename collisions");
             ui.add_space(10.0);
             ui.add_enabled_ui(!self.is_working(), |ui| {
                 ui.checkbox(
                     &mut self.use_oldest_date,
-                    "Use the older of created and modified dates",
+                    "For fallback dates, use the older created/modified date",
                 )
                 .on_hover_text(
-                    "By default, MediaSift uses the file's creation date when available.",
+                    "Embedded capture dates still take priority. This affects only media without a usable capture date.",
+                );
+                ui.checkbox(
+                    &mut self.correct_existing_date_prefixes,
+                    "Correct existing date prefixes when metadata disagrees",
+                )
+                .on_hover_text(
+                    "Off by default to preserve user-authored filenames. Turn this on to repair prefixes created from the wrong filesystem date.",
                 );
                 ui.checkbox(
                     &mut self.open_prefix_folder_when_finished,

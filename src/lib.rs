@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Datelike, Local, NaiveDate};
 use exif::{In, Reader, Tag, Value};
 use image::{ImageFormat, Rgb, RgbImage};
 use serde::Serialize;
@@ -63,8 +63,22 @@ pub struct FileActionSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenameSummary {
     pub renamed: usize,
+    pub corrected_prefixes: usize,
+    pub capture_dates_used: usize,
+    pub filesystem_dates_used: usize,
     pub skipped: usize,
     pub failures: Vec<String>,
+}
+
+/// User-selected behavior for adding dates to media filenames.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DatePrefixOptions {
+    /// For media without an embedded capture date, use the earlier filesystem
+    /// timestamp instead of preferring creation time.
+    pub use_oldest_filesystem_date: bool,
+    /// Replace an existing `YYYY-MM-DD - ` prefix when it disagrees with the
+    /// preferred date. Disabled by default to preserve user-authored names.
+    pub correct_existing_prefixes: bool,
 }
 
 /// A conservative local-restoration prompt for use with an external image model.
@@ -604,14 +618,13 @@ pub fn sort_images(directory: &Path) -> io::Result<usize> {
     Ok(moved)
 }
 
-/// Prefix supported media files recursively with their filesystem creation date.
+/// Prefix supported media files recursively with their preferred date.
 ///
-/// Existing `yyyy-MM-dd - ` prefixes are preserved. If `use_oldest_date` is true,
-/// the earlier of the creation and last-modified timestamps is used, which is useful
-/// for recovered media whose creation timestamp was reset during restoration.
+/// Embedded image capture dates take precedence over filesystem timestamps.
+/// Existing `YYYY-MM-DD - ` prefixes are preserved unless correction is enabled.
 pub fn prefix_media_files_with_date(
     directory: &Path,
-    use_oldest_date: bool,
+    options: DatePrefixOptions,
 ) -> Result<RenameSummary, String> {
     if !directory.is_dir() {
         return Err(format!("Directory does not exist: {}", directory.display()));
@@ -619,6 +632,9 @@ pub fn prefix_media_files_with_date(
     let root = absolute_path(directory).map_err(|error| error.to_string())?;
     let mut summary = RenameSummary {
         renamed: 0,
+        corrected_prefixes: 0,
+        capture_dates_used: 0,
+        filesystem_dates_used: 0,
         skipped: 0,
         failures: Vec::new(),
     };
@@ -627,11 +643,12 @@ pub fn prefix_media_files_with_date(
             summary.skipped += 1;
             continue;
         };
-        if has_date_prefix(file_name) {
+        let existing_prefix = has_date_prefix(file_name);
+        if existing_prefix && !options.correct_existing_prefixes {
             summary.skipped += 1;
             continue;
         }
-        let date = match filesystem_date(&source, use_oldest_date) {
+        let preferred_date = match preferred_media_date(&source, options) {
             Ok(date) => date,
             Err(error) => {
                 summary
@@ -640,16 +657,34 @@ pub fn prefix_media_files_with_date(
                 continue;
             }
         };
+        if existing_prefix && file_name.starts_with(&preferred_date.text) {
+            summary.skipped += 1;
+            continue;
+        }
         let Some(parent) = source.parent() else {
             summary
                 .failures
                 .push(format!("{}: no parent directory", source.display()));
             continue;
         };
-        let destination =
-            available_destination(parent, OsStr::new(&format!("{date} - {file_name}")));
+        let unprefixed_name = if existing_prefix {
+            &file_name[13..]
+        } else {
+            file_name
+        };
+        let destination = available_destination(
+            parent,
+            OsStr::new(&format!("{} - {unprefixed_name}", preferred_date.text)),
+        );
         match fs::rename(&source, destination) {
-            Ok(()) => summary.renamed += 1,
+            Ok(()) => {
+                summary.renamed += 1;
+                summary.corrected_prefixes += usize::from(existing_prefix);
+                match preferred_date.source {
+                    FilenameDateSource::EmbeddedCapture => summary.capture_dates_used += 1,
+                    FilenameDateSource::Filesystem => summary.filesystem_dates_used += 1,
+                }
+            }
             Err(error) => summary
                 .failures
                 .push(format!("{}: {error}", source.display())),
@@ -741,6 +776,32 @@ fn filesystem_date(path: &Path, use_oldest_date: bool) -> io::Result<String> {
     };
     let local: DateTime<Local> = date.into();
     Ok(local.format("%Y-%m-%d").to_string())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilenameDateSource {
+    EmbeddedCapture,
+    Filesystem,
+}
+
+struct FilenameDate {
+    text: String,
+    source: FilenameDateSource,
+}
+
+fn preferred_media_date(path: &Path, options: DatePrefixOptions) -> io::Result<FilenameDate> {
+    if media_kind(path) == Some(MediaKind::Image)
+        && let Some(date) = exif_capture_date(path)
+    {
+        return Ok(FilenameDate {
+            text: date.format("%Y-%m-%d").to_string(),
+            source: FilenameDateSource::EmbeddedCapture,
+        });
+    }
+    Ok(FilenameDate {
+        text: filesystem_date(path, options.use_oldest_filesystem_date)?,
+        source: FilenameDateSource::Filesystem,
+    })
 }
 
 fn enhanced_destination(input: &Path) -> Result<PathBuf, String> {
@@ -853,39 +914,57 @@ fn absolute_path(path: &Path) -> io::Result<PathBuf> {
 }
 
 fn date_folder(path: &Path) -> Option<(u16, &'static str)> {
+    let date = exif_capture_date(path)?;
+    let year = u16::try_from(date.year()).ok()?;
+    Some((year, month_name(date.month())?))
+}
+
+fn exif_capture_date(path: &Path) -> Option<NaiveDate> {
     let file = File::open(path).ok()?;
     let mut reader = BufReader::new(file);
     let exif = Reader::new().read_from_container(&mut reader).ok()?;
-    let field = exif.get_field(Tag::DateTimeOriginal, In::PRIMARY)?;
-    let Value::Ascii(values) = &field.value else {
-        return None;
-    };
-    let date = std::str::from_utf8(values.first()?).ok()?;
-    parse_exif_date(date)
+    [Tag::DateTimeOriginal, Tag::DateTimeDigitized, Tag::DateTime]
+        .into_iter()
+        .filter_map(|tag| exif.get_field(tag, In::PRIMARY))
+        .find_map(|field| {
+            let Value::Ascii(values) = &field.value else {
+                return None;
+            };
+            values
+                .iter()
+                .filter_map(|value| std::str::from_utf8(value).ok())
+                .find_map(parse_exif_date)
+        })
 }
 
-fn parse_exif_date(value: &str) -> Option<(u16, &'static str)> {
+fn parse_exif_date(value: &str) -> Option<NaiveDate> {
     let bytes = value.as_bytes();
-    if bytes.len() < 7 || bytes[4] != b':' {
+    if bytes.len() < 10 || bytes[4] != b':' || bytes[7] != b':' {
         return None;
     }
-    let year = value[..4].parse().ok()?;
-    let month = match &value[5..7] {
-        "01" => "Jan",
-        "02" => "Feb",
-        "03" => "Mar",
-        "04" => "Apr",
-        "05" => "May",
-        "06" => "Jun",
-        "07" => "Jul",
-        "08" => "Aug",
-        "09" => "Sep",
-        "10" => "Oct",
-        "11" => "Nov",
-        "12" => "Dec",
-        _ => return None,
-    };
-    Some((year, month))
+    NaiveDate::from_ymd_opt(
+        value[..4].parse().ok()?,
+        value[5..7].parse().ok()?,
+        value[8..10].parse().ok()?,
+    )
+}
+
+fn month_name(month: u32) -> Option<&'static str> {
+    match month {
+        1 => Some("Jan"),
+        2 => Some("Feb"),
+        3 => Some("Mar"),
+        4 => Some("Apr"),
+        5 => Some("May"),
+        6 => Some("Jun"),
+        7 => Some("Jul"),
+        8 => Some("Aug"),
+        9 => Some("Sep"),
+        10 => Some("Oct"),
+        11 => Some("Nov"),
+        12 => Some("Dec"),
+        _ => None,
+    }
 }
 
 fn available_destination(directory: &Path, file_name: &OsStr) -> PathBuf {
@@ -1088,8 +1167,12 @@ mod tests {
 
     #[test]
     fn parses_valid_exif_dates() {
-        assert_eq!(parse_exif_date("2024:01:02 03:04:05"), Some((2024, "Jan")));
+        assert_eq!(
+            parse_exif_date("2024:01:02 03:04:05"),
+            NaiveDate::from_ymd_opt(2024, 1, 2)
+        );
         assert_eq!(parse_exif_date("2024:13:02 03:04:05"), None);
+        assert_eq!(parse_exif_date("2024:02:30 03:04:05"), None);
         assert_eq!(parse_exif_date("not a date"), None);
     }
 
@@ -1176,8 +1259,9 @@ mod tests {
         fs::write(root.join("photo.jpg"), b"jpeg bytes").unwrap();
         fs::write(root.join("notes.txt"), b"notes").unwrap();
 
-        let summary = prefix_media_files_with_date(&root, false).unwrap();
+        let summary = prefix_media_files_with_date(&root, DatePrefixOptions::default()).unwrap();
         assert_eq!(summary.renamed, 1);
+        assert_eq!(summary.filesystem_dates_used, 1);
         assert_eq!(summary.failures, Vec::<String>::new());
         assert!(root.join("notes.txt").is_file());
         assert!(
@@ -1188,6 +1272,51 @@ mod tests {
                     .file_name()
                     .to_string_lossy()
                     .ends_with(" - photo.jpg"))
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn filename_prefix_prefers_embedded_date_taken_over_filesystem_date() {
+        let root = temp_dir();
+        let source = root.join("A Tree Over the River.jpg");
+        fs::write(&source, jpeg_with_exif_date("2010:09:20 15:55:00")).unwrap();
+
+        let summary = prefix_media_files_with_date(&root, DatePrefixOptions::default()).unwrap();
+
+        assert_eq!(summary.renamed, 1);
+        assert_eq!(summary.capture_dates_used, 1);
+        assert_eq!(summary.filesystem_dates_used, 0);
+        assert!(
+            root.join("2010-09-20 - A Tree Over the River.jpg")
+                .is_file()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incorrect_existing_prefix_requires_explicit_correction() {
+        let root = temp_dir();
+        let incorrect = root.join("2017-07-06 - A Tree Over the River.jpg");
+        fs::write(&incorrect, jpeg_with_exif_date("2010:09:20 15:55:00")).unwrap();
+
+        let preserved = prefix_media_files_with_date(&root, DatePrefixOptions::default()).unwrap();
+        assert_eq!(preserved.skipped, 1);
+        assert!(incorrect.is_file());
+
+        let corrected = prefix_media_files_with_date(
+            &root,
+            DatePrefixOptions {
+                correct_existing_prefixes: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(corrected.renamed, 1);
+        assert_eq!(corrected.corrected_prefixes, 1);
+        assert!(
+            root.join("2010-09-20 - A Tree Over the River.jpg")
+                .is_file()
         );
         fs::remove_dir_all(root).unwrap();
     }
